@@ -9,6 +9,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 
 find_package(OpenCV REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(AVCODEC REQUIRED libavcodec libavformat libswresample libavutil)
 
 add_subdirectory(vendor/SDL EXCLUDE_FROM_ALL)
 
@@ -47,10 +49,12 @@ target_include_directories(main PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL/include
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends
+    ${AVCODEC_INCLUDE_DIRS}
 )
 
 target_link_libraries(main PRIVATE
     SDL3::SDL3
     my_imgui
     ${OpenCV_LIBS}
+    ${AVCODEC_LIBRARIES}
 )
