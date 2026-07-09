@@ -7,27 +7,9 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
 
-#include <opencv2/opencv.hpp>
-
-#include <string>
-#include <vector>
-#include <memory>
-#include <filesystem>
-#include <algorithm>
-#include <cmath>
-#include <cctype>
-#include <cstdio>
-#include <cstdlib>
-
-#include "utils.hpp"
-#include "ffmpeg.hpp"
-
-namespace fs = std::filesystem;
+#include "appstate.hpp"
 
 constexpr int BORDER_SIZE = 5;
-// Define a unique event ID for our frame ticker
-#define USEREVENT_NEXT_FRAME (SDL_EVENT_USER + 1)
-#define USEREVENT_DECODE_TICK (SDL_EVENT_USER + 2)
 
 namespace {
 std::string shell_quote(const std::string &value) {
@@ -65,166 +47,7 @@ bool open_file_location(const fs::path &file_path) {
 
     return false;
 }
-
-// This callback fires every X milliseconds
-uint32_t SDLCALL FrameTimerCallback(void* userdata, SDL_TimerID timerID, uint32_t interval) {
-    SDL_Event event;
-    SDL_zero(event);
-    event.type = USEREVENT_NEXT_FRAME;
-    
-    // Push it to the main event loop
-    SDL_PushEvent(&event);
-    
-    // Return the interval to keep the timer repeating at the same rate
-    return interval; 
 }
-}
-
-using WindowPtr = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
-using RendererPtr = std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)>;
-using TexturePtr = std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)>;
-using TimerId = ResourceHandle<SDL_TimerID, decltype(&SDL_RemoveTimer)>;
-using AudioStream = std::unique_ptr<SDL_AudioStream, decltype(&SDL_DestroyAudioStream)>;
-
-uint32_t SDLCALL AudioTimerCallback(void* userdata, SDL_TimerID timerID, uint32_t interval);
-
-struct AppState {
-    std::vector<std::string> image_files;
-    std::size_t current_index = 0;
-    std::string parent_dir;
-    bool trigger_context_menu = false;
-    float image_aspect = 1.0f;
-
-    WindowPtr window{nullptr, SDL_DestroyWindow};
-    RendererPtr renderer{nullptr, SDL_DestroyRenderer};
-    TexturePtr texture{nullptr, SDL_DestroyTexture};
-    AudioStream audio_stream{nullptr, SDL_DestroyAudioStream};
-
-    cv::VideoCapture cap;
-    cv::Mat frame;
-    TimerId timer_id{0, SDL_RemoveTimer};
-    TimerId audio_timer_id{0, SDL_RemoveTimer};
-    ff::VideoFile video;
-
-    AppState() = default;
-    ~AppState() = default;
-
-    static bool is_supported_image(const fs::path &p) {
-        if (!p.has_extension()) return false;
-        auto ext = p.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
-        return (ext == ".mp4" || ext == ".mkv" || ext == ".avi" || ext == ".mov" || ext == ".flv" || ext == ".wmv" || ext == ".webm");
-    }
-
-    bool load_image_at_index() {
-        if (image_files.empty() || !renderer) return false;
-
-        const auto &filename = image_files[current_index];
-        fs::path full = fs::path(parent_dir) / filename;
-
-        // Release previous texture via RAII
-        texture.reset();
-        timer_id.reset();
-
-        if (!cap.open(full.string())) {
-            return false;
-        }
-        if (!video.open(full.string())) {
-            return false;
-        }
-
-        double fps = cap.get(cv::CAP_PROP_FPS);
-        uint32_t interval_ms = static_cast<uint32_t>(1000.0 / (fps > 0 ? fps : 30.0));
-
-        // Create an SDL3 texture that matches the video dimensions
-        SDL_Texture* tex = SDL_CreateTexture(
-            renderer.get(), 
-            SDL_PIXELFORMAT_BGR24, // OpenCV default format matches BGR
-            SDL_TEXTUREACCESS_STREAMING, 
-            cap.get(cv::CAP_PROP_FRAME_WIDTH), 
-            cap.get(cv::CAP_PROP_FRAME_HEIGHT)
-        );
-        if (!tex) return false;
-        float img_w, img_h;
-        SDL_GetTextureSize(tex, &img_w, &img_h);
-        cap.read(frame);
-        SDL_UpdateTexture(tex, nullptr, frame.data, frame.step);
-        texture.reset(tex);
-
-        if (video.find_audio_stream()) {
-            if (video.open_audio_decoder()) {
-                video.setup_swr_context();
-
-                int count = 0;
-                auto *devices = SDL_GetAudioPlaybackDevices(&count);
-                if (count > 0) {
-                    SDL_AudioSpec target_spec = { SDL_AUDIO_S16LE, 2, 44100 }; // Standard CD quality format
-                    auto stream = SDL_CreateAudioStream(&target_spec, &target_spec);
-                    if (!stream) {
-                        SDL_Log("Failed to create audio stream: %s", SDL_GetError());
-                        return false;
-                    }
-                    // Open a real logical connection to the system soundcard
-                    SDL_AudioDeviceID dev_id = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, nullptr);
-                    if (dev_id == 0) {
-                        SDL_Log("Failed to open physical audio device: %s", SDL_GetError());
-                        return false;
-                    }
-                    audio_stream.reset(stream);
-                    SDL_BindAudioStream(dev_id, audio_stream.get());
-                    SDL_ResumeAudioDevice(dev_id);
-
-                    audio_timer_id.reset(SDL_AddTimer(10, AudioTimerCallback, this)); // Small tick window to stream sound buffers
-                } else
-                    SDL_Log("Audio Error: %s", SDL_GetError());
-                SDL_free(devices);
-            }
-        }
-
-        image_aspect = img_h > 0.0f ? img_w / img_h : 1.0f;
-
-        if (window) {
-            SDL_DisplayID primary_display = SDL_GetPrimaryDisplay();
-            SDL_Rect display_bounds;
-            if (!SDL_GetDisplayUsableBounds(primary_display, &display_bounds)) {
-                display_bounds.x = 0; display_bounds.y = 0;
-                display_bounds.w = 1920; display_bounds.h = 1080;
-            }
-
-            int current_x = 0, current_y = 0;
-            int current_w = 0, current_h = 0;
-            SDL_GetWindowPosition(window.get(), &current_x, &current_y);
-            SDL_GetWindowSize(window.get(), &current_w, &current_h);
-            int center_x = current_x + current_w / 2;
-            int center_y = current_y + current_h / 2;
-
-            // Compute new target size with scaling to fit display
-            int target_w = static_cast<int>(img_w);
-            int target_h = static_cast<int>(img_h);
-            if (target_w > display_bounds.w || target_h > display_bounds.h) {
-                float scale = SDL_min(static_cast<float>(display_bounds.w) / img_w,
-                                      static_cast<float>(display_bounds.h) / img_h);
-                target_w = static_cast<int>(img_w * scale);
-                target_h = static_cast<int>(img_h * scale);
-            }
-
-            int new_x = center_x - target_w / 2;
-            int new_y = center_y - target_h / 2;
-            if (new_x < display_bounds.x) new_x = display_bounds.x;
-            if (new_y < display_bounds.y) new_y = display_bounds.y;
-            if (new_x + target_w > display_bounds.x + display_bounds.w) new_x = display_bounds.x + display_bounds.w - target_w;
-            if (new_y + target_h > display_bounds.y + display_bounds.h) new_y = display_bounds.y + display_bounds.h - target_h;
-
-            SDL_SetWindowSize(window.get(), target_w, target_h);
-            SDL_SetWindowPosition(window.get(), new_x, new_y);
-        }
-
-        SDL_SetWindowTitle(window.get(), filename.c_str());
-
-        timer_id.reset(SDL_AddTimer(interval_ms, FrameTimerCallback, this));
-        return true;
-    }
-};
 
 static SDL_HitTestResult SDLCALL WindowHitTest(SDL_Window *win, const SDL_Point *area, void *data) {
     if (ImGui::GetIO().WantCaptureMouse) return SDL_HITTEST_NORMAL;
@@ -246,24 +69,9 @@ static SDL_HitTestResult SDLCALL WindowHitTest(SDL_Window *win, const SDL_Point 
     return SDL_HITTEST_DRAGGABLE;
 }
 
-uint32_t SDLCALL AudioTimerCallback(void* userdata, SDL_TimerID timerID, uint32_t interval) {
+uint32_t SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, uint32_t interval) {
     auto *state = static_cast<AppState*>(userdata);
-
-    while (SDL_GetAudioStreamQueued(state->audio_stream.get()) < 44100 * 2) {
-        if (!state->video.feed_audio_frame([state](uint8_t *out_data, int out_size) -> void {
-            // Feed the raw sound bytes to SDL3's background mixer
-            if (!SDL_PutAudioStreamData(state->audio_stream.get(), out_data, out_size)) {
-                SDL_Log("Audio Stream Error: %s", SDL_GetError());
-            } else {
-//                SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(state->audio_stream.get()));
-//                SDL_Log("Pushed %d bytes of raw sound to soundcard!", out_size);
-            }
-        })) {
-            return 0; // Stop the timer if no more audio frames are available
-        }
-    }
-
-    return interval; // Repeat smoothly
+    return state->time_next_frame();
 }
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
@@ -336,7 +144,8 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     return SDL_APP_CONTINUE;
 }
 
-SDL_AppResult quit(SDL_AppResult rlt) {
+SDL_AppResult quit(SDL_AppResult rlt, AppState *state) {
+    state->timer_id.reset();
     ImGui_ImplSDLRenderer3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
@@ -347,21 +156,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     auto *state = static_cast<AppState*>(appstate);
     ImGui_ImplSDL3_ProcessEvent(event);
 
-    if (event->type == SDL_EVENT_QUIT) return quit(SDL_APP_SUCCESS);
+    if (event->type == SDL_EVENT_QUIT) return quit(SDL_APP_SUCCESS, state);
 
-    // Catch our custom timer event!
     if (event->type == USEREVENT_NEXT_FRAME) {
-        cv::Mat next_frame;
-        if (state->cap.read(next_frame) && !next_frame.empty()) {
-            state->frame = next_frame;
-            
-            // Upload the new pixels to the GPU
-            SDL_UpdateTexture(state->texture.get(), nullptr, 
-                              state->frame.data, state->frame.step);
-        } else {
-            // End of video reached: stop the timer
-            state->timer_id.reset();
-        }
+        SDL_UpdateYUVTexture(state->texture.get(), nullptr, state->video_frame->data[0], state->video_frame->linesize[0], state->video_frame->data[1], state->video_frame->linesize[1], state->video_frame->data[2], state->video_frame->linesize[2]);
+        return SDL_APP_CONTINUE;
     }
 
     if (event->type == SDL_EVENT_WINDOW_RESIZED && state->window && event->window.windowID == SDL_GetWindowID(state->window.get()) && state->image_aspect > 0.0f) {
@@ -404,7 +203,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
     if (event->type == SDL_EVENT_KEY_DOWN) {
         switch (event->key.key) {
-            case SDLK_ESCAPE: return quit(SDL_APP_SUCCESS);
+            case SDLK_ESCAPE: return quit(SDL_APP_SUCCESS, state);
             case SDLK_SPACE:
                 if (state->image_files.size() > 1) {
                     state->current_index = (state->current_index + 1) % state->image_files.size();
@@ -472,7 +271,7 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Esc")) {
-            return quit(SDL_APP_SUCCESS);
+            return quit(SDL_APP_SUCCESS, state);
         }
         ImGui::EndPopup();
     }

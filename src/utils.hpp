@@ -1,3 +1,5 @@
+#pragma once
+
 template <typename ResourceID, typename DestroyFunc>
 class ResourceHandle {
 public:
