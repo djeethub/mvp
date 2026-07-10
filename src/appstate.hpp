@@ -9,6 +9,8 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
+#include <thread>
 #include <queue>
 
 #include "utils.hpp"
@@ -24,7 +26,6 @@ namespace fs = std::filesystem;
 using WindowPtr = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
 using RendererPtr = std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)>;
 using TexturePtr = std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)>;
-using TimerId = ResourceHandle<SDL_TimerID, decltype(&SDL_RemoveTimer)>;
 using AudioStream = std::unique_ptr<SDL_AudioStream, decltype(&SDL_DestroyAudioStream)>;
 
 uint32_t SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, uint32_t interval);
@@ -41,17 +42,21 @@ struct AppState {
     TexturePtr texture{nullptr, SDL_DestroyTexture};
     AudioStream audio_stream{nullptr, SDL_DestroyAudioStream};
 
-    TimerId timer_id{0, SDL_RemoveTimer};
     ff::VideoFile video;
-    AVFrame *video_frame = nullptr;
+    std::atomic<AVFrame *> video_frame{nullptr};
     std::queue<AVFrame *> frame_queue;
     std::queue<AVFrame *> frame_trash;
     uint64_t tick_diff = 0;
     double video_time_base = 0.0;
     double audio_time_base = 0.0;
+    SDL_AudioDeviceID audio_device_id = 0;
+    std::atomic<bool> is_running{false};
+    std::thread fetch_thread;
 
     AppState() = default;
-    ~AppState() = default;
+    ~AppState() {
+        reset_runtime_state();
+    }
 
     static bool is_supported_image(const fs::path &p) {
         if (!p.has_extension()) return false;
@@ -60,15 +65,50 @@ struct AppState {
         return (ext == ".mp4" || ext == ".mkv" || ext == ".avi" || ext == ".mov" || ext == ".flv" || ext == ".wmv" || ext == ".webm");
     }
 
+    void clear_frame_buffers() {
+        while (!frame_queue.empty()) {
+            av_frame_free(&frame_queue.front());
+            frame_queue.pop();
+        }
+        while (!frame_trash.empty()) {
+            av_frame_free(&frame_trash.front());
+            frame_trash.pop();
+        }
+        if (video_frame) {
+            auto frame = video_frame.exchange(nullptr);
+            av_frame_free(&frame);
+        }
+    }
+
+    void reset_runtime_state() {
+        if (audio_device_id != 0) {
+            SDL_CloseAudioDevice(audio_device_id);
+            audio_device_id = 0;
+        }
+        audio_stream.reset();
+        texture.reset();
+        clear_frame_buffers();
+        video.close();
+    }
+
+    void stop() {
+        if (!is_running.exchange(false, std::memory_order_release)) {
+            return;
+        }
+        if (fetch_thread.joinable()) {
+            fetch_thread.join();
+        }
+        SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+    }
+
     bool load_image_at_index() {
         if (image_files.empty() || !renderer) return false;
 
+        stop();
         const auto &filename = image_files[current_index];
         fs::path full = fs::path(parent_dir) / filename;
 
-        // Release previous texture via RAII
-        texture.reset();
-        timer_id.reset();
+        reset_runtime_state();
 
         if (!video.open(full.string())) {
             return false;
@@ -95,6 +135,7 @@ struct AppState {
                         return false;
                     }
                     audio_stream.reset(stream);
+                    audio_device_id = dev_id;
                     SDL_BindAudioStream(dev_id, audio_stream.get());
                     SDL_ResumeAudioDevice(dev_id);
                 } else
@@ -168,7 +209,8 @@ struct AppState {
         SDL_SetWindowTitle(window.get(), filename.c_str());
 
         set_play_time(0);
-        timer_id.reset(SDL_AddTimer(time_next_frame(), TimerCallback, this));
+        is_running.store(true, std::memory_order_release);
+        fetch_thread = std::thread(fetch_thread_worker, this);
         return true;
     }
 
@@ -177,7 +219,7 @@ struct AppState {
         while (!done) {
             if (!video.feed_frame([&](uint8_t *out_data, int out_size) -> void {
                 // Feed the raw sound bytes to SDL3's background mixer
-                if (!SDL_PutAudioStreamData(audio_stream.get(), out_data, out_size)) {
+                if (audio_stream && !SDL_PutAudioStreamData(audio_stream.get(), out_data, out_size)) {
                     SDL_Log("Audio Stream Error: %s", SDL_GetError());
                 }
                 if (!video.is_video()) {
@@ -202,12 +244,18 @@ struct AppState {
     }
 
     uint32_t time_next_frame() {
-        uint32_t interval = 10;
+        uint32_t interval = 200;
         if (video.is_video() && !frame_queue.empty()) {
             if (video_frame)
                 frame_trash.push(video_frame); // Move the current frame to the trash queue
-            video_frame = frame_queue.front(); // Update the current frame pointer
+            video_frame.store(frame_queue.front(), std::memory_order_release); // Update the current frame pointer
             frame_queue.pop(); // Remove the frame from the queue
+
+            SDL_Event event;
+            SDL_zero(event);
+            event.type = USEREVENT_NEXT_FRAME;
+            // Push it to the main event loop
+            SDL_PushEvent(&event);
         }
         read_next_frame(); // Preload the next frame
         if (video.is_video()) {
@@ -224,7 +272,7 @@ struct AppState {
                 }
                 // If the frame is already due, pop it and check the next one
                 frame_trash.push(video_frame); // Move the current frame to the trash queue
-                video_frame = frame_queue.front(); // Update the current frame pointer
+                video_frame.store(frame_queue.front(), std::memory_order_release); // Update the current frame pointer
                 frame_queue.pop(); // Remove the frame from the queue
                 read_next_frame();
                 if (frame_queue.empty()) {
@@ -232,18 +280,23 @@ struct AppState {
                     break;
                 }
             }
-
-            SDL_Event event;
-            SDL_zero(event);
-            event.type = USEREVENT_NEXT_FRAME;
-            // Push it to the main event loop
-            SDL_PushEvent(&event);
         } else {
-            while (SDL_GetAudioStreamQueued(audio_stream.get()) < 44100 * 2) {
-                read_next_frame();
+            while (!audio_stream || SDL_GetAudioStreamQueued(audio_stream.get()) < 44100 * 2) {
+                if (!read_next_frame()) {
+                    break;
+                }
             }
         }
         return interval;
+    }
+
+    static void fetch_thread_worker(AppState* state) {
+        while (state->is_running.load(std::memory_order_acquire)) {
+            auto interval = state->time_next_frame();
+            if (interval == 0)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(interval));
+        }
     }
 
     inline void set_play_time(uint64_t play_time) {

@@ -145,7 +145,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
 }
 
 SDL_AppResult quit(SDL_AppResult rlt, AppState *state) {
-    state->timer_id.reset();
+    state->stop();
     ImGui_ImplSDLRenderer3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
@@ -159,7 +159,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     if (event->type == SDL_EVENT_QUIT) return quit(SDL_APP_SUCCESS, state);
 
     if (event->type == USEREVENT_NEXT_FRAME) {
-        SDL_UpdateYUVTexture(state->texture.get(), nullptr, state->video_frame->data[0], state->video_frame->linesize[0], state->video_frame->data[1], state->video_frame->linesize[1], state->video_frame->data[2], state->video_frame->linesize[2]);
+        auto video_frame = state->video_frame.load(std::memory_order_acquire);
+        SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
         return SDL_APP_CONTINUE;
     }
 
