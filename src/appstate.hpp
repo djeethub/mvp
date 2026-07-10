@@ -52,6 +52,9 @@ struct AppState {
     SDL_AudioDeviceID audio_device_id = 0;
     std::atomic<bool> is_running{false};
     std::thread fetch_thread;
+    float video_scale = 1.0;
+    float video_pan_x = 0.0;
+    float video_pan_y = 0.0;
 
     AppState() = default;
     ~AppState() {
@@ -168,44 +171,8 @@ struct AppState {
         }
 
         read_next_frame();
-
         image_aspect = img_h > 0.0f ? img_w / img_h : 1.0f;
-        if (window) {
-            SDL_DisplayID primary_display = SDL_GetPrimaryDisplay();
-            SDL_Rect display_bounds;
-            if (!SDL_GetDisplayUsableBounds(primary_display, &display_bounds)) {
-                display_bounds.x = 0; display_bounds.y = 0;
-                display_bounds.w = 1920; display_bounds.h = 1080;
-            }
-
-            int current_x = 0, current_y = 0;
-            int current_w = 0, current_h = 0;
-            SDL_GetWindowPosition(window.get(), &current_x, &current_y);
-            SDL_GetWindowSize(window.get(), &current_w, &current_h);
-            int center_x = current_x + current_w / 2;
-            int center_y = current_y + current_h / 2;
-
-            // Compute new target size with scaling to fit display
-            int target_w = static_cast<int>(img_w);
-            int target_h = static_cast<int>(img_h);
-            if (target_w > display_bounds.w || target_h > display_bounds.h) {
-                float scale = SDL_min(static_cast<float>(display_bounds.w) / img_w,
-                                      static_cast<float>(display_bounds.h) / img_h);
-                target_w = static_cast<int>(img_w * scale);
-                target_h = static_cast<int>(img_h * scale);
-            }
-
-            int new_x = center_x - target_w / 2;
-            int new_y = center_y - target_h / 2;
-            if (new_x < display_bounds.x) new_x = display_bounds.x;
-            if (new_y < display_bounds.y) new_y = display_bounds.y;
-            if (new_x + target_w > display_bounds.x + display_bounds.w) new_x = display_bounds.x + display_bounds.w - target_w;
-            if (new_y + target_h > display_bounds.y + display_bounds.h) new_y = display_bounds.y + display_bounds.h - target_h;
-
-            SDL_SetWindowSize(window.get(), target_w, target_h);
-            SDL_SetWindowPosition(window.get(), new_x, new_y);
-        }
-
+        resize_window();
         SDL_SetWindowTitle(window.get(), filename.c_str());
 
         set_play_time(0);
@@ -305,5 +272,54 @@ struct AppState {
 
     inline uint64_t get_play_time() const {
         return SDL_GetTicks() - tick_diff;
+    }
+
+    void resize_window(float window_scale = 1.0) {
+        if (!texture)
+            return;
+        float img_w, img_h;
+        SDL_GetTextureSize(texture.get(), &img_w, &img_h);
+
+        SDL_DisplayID primary_display = SDL_GetPrimaryDisplay();
+        SDL_Rect display_bounds;
+        if (!SDL_GetDisplayUsableBounds(primary_display, &display_bounds))
+        {
+            display_bounds.x = 0;
+            display_bounds.y = 0;
+            display_bounds.w = 1920;
+            display_bounds.h = 1080;
+        }
+
+        int current_x = 0, current_y = 0;
+        int current_w = 0, current_h = 0;
+        SDL_GetWindowPosition(window.get(), &current_x, &current_y);
+        SDL_GetWindowSize(window.get(), &current_w, &current_h);
+        int center_x = current_x + current_w / 2;
+        int center_y = current_y + current_h / 2;
+
+        // Compute new target size with scaling to fit display
+        int target_w = static_cast<int>(img_w) * window_scale;
+        int target_h = static_cast<int>(img_h) * window_scale;
+        if (target_w > display_bounds.w || target_h > display_bounds.h)
+        {
+            float scale = SDL_min(static_cast<float>(display_bounds.w) / img_w,
+                                  static_cast<float>(display_bounds.h) / img_h);
+            target_w = static_cast<int>(img_w * scale);
+            target_h = static_cast<int>(img_h * scale);
+        }
+
+        int new_x = center_x - target_w / 2;
+        int new_y = center_y - target_h / 2;
+        if (new_x < display_bounds.x)
+            new_x = display_bounds.x;
+        if (new_y < display_bounds.y)
+            new_y = display_bounds.y;
+        if (new_x + target_w > display_bounds.x + display_bounds.w)
+            new_x = display_bounds.x + display_bounds.w - target_w;
+        if (new_y + target_h > display_bounds.y + display_bounds.h)
+            new_y = display_bounds.y + display_bounds.h - target_h;
+
+        SDL_SetWindowSize(window.get(), target_w, target_h);
+        SDL_SetWindowPosition(window.get(), new_x, new_y);
     }
 };

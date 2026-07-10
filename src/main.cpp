@@ -10,6 +10,8 @@
 #include "appstate.hpp"
 
 constexpr int BORDER_SIZE = 5;
+#define PAN_N   5
+#define SCALE_N 0.005
 
 namespace {
 std::string shell_quote(const std::string &value) {
@@ -144,11 +146,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     return SDL_APP_CONTINUE;
 }
 
-SDL_AppResult quit(SDL_AppResult rlt, AppState *state) {
-    state->stop();
-    ImGui_ImplSDLRenderer3_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
+inline SDL_AppResult quit(SDL_AppResult rlt, AppState *state) {
     return rlt;
 }
 
@@ -164,7 +162,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         return SDL_APP_CONTINUE;
     }
 
-    if (event->type == SDL_EVENT_WINDOW_RESIZED && state->window && event->window.windowID == SDL_GetWindowID(state->window.get()) && state->image_aspect > 0.0f) {
+/*     if (event->type == SDL_EVENT_WINDOW_RESIZED && state->window && event->window.windowID == SDL_GetWindowID(state->window.get()) && state->image_aspect > 0.0f) {
         int new_w = event->window.data1;
         int new_h = event->window.data2;
         if (new_w > 0 && new_h > 0) {
@@ -183,7 +181,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             }
         }
     }
-
+ */
     if (event->type == SDL_EVENT_MOUSE_WHEEL && !ImGui::GetIO().WantCaptureMouse) {
         if (event->wheel.y < 0) {
             if (state->image_files.size() > 1) {
@@ -205,13 +203,14 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     if (event->type == SDL_EVENT_KEY_DOWN) {
         switch (event->key.key) {
             case SDLK_ESCAPE: return quit(SDL_APP_SUCCESS, state);
-            case SDLK_SPACE:
+            case SDLK_RETURN:
+            case SDLK_RIGHTBRACKET:
                 if (state->image_files.size() > 1) {
                     state->current_index = (state->current_index + 1) % state->image_files.size();
                     state->load_image_at_index();
                 }
                 break;
-            case SDLK_BACKSPACE:
+            case SDLK_LEFTBRACKET:
                 if (state->image_files.size() > 1) {
                     state->current_index = (state->current_index + state->image_files.size() - 1) % state->image_files.size();
                     state->load_image_at_index();
@@ -224,7 +223,58 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     open_file_location(full);
                 }
                 break;
-        }
+            case SDLK_KP_9:
+                state->video_scale += SCALE_N;
+                break;
+            case SDLK_KP_1:
+                state->video_scale -= SCALE_N;
+                break;
+            case SDLK_KP_5:
+                state->video_scale = 1;
+                state->video_pan_x = 0;
+                state->video_pan_y = 0;
+                break;
+            case SDLK_LEFT:
+                if (event->key.mod & SDL_KMOD_ALT) {
+                    state->video_pan_x -= PAN_N;
+                }
+                break;
+            case SDLK_RIGHT:
+                if (event->key.mod & SDL_KMOD_ALT)
+                {
+                    state->video_pan_x += PAN_N;
+                }
+                break;
+            case SDLK_UP:
+                if (event->key.mod & SDL_KMOD_ALT)
+                {
+                    state->video_pan_y -= PAN_N;
+                }
+                break;
+            case SDLK_DOWN:
+                if (event->key.mod & SDL_KMOD_ALT)
+                {
+                    state->video_pan_y += PAN_N;
+                }
+                break;
+            case SDLK_1:
+                if (event->key.mod & SDL_KMOD_ALT) {
+                    state->resize_window(0.5);
+                }
+                break;
+            case SDLK_2:
+                if (event->key.mod & SDL_KMOD_ALT)
+                {
+                    state->resize_window(1);
+                }
+                break;
+            case SDLK_3:
+                if (event->key.mod & SDL_KMOD_ALT)
+                {
+                    state->resize_window(2);
+                }
+                break;
+            }
     }
 
     return SDL_APP_CONTINUE;
@@ -240,9 +290,9 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
     SDL_GetRenderOutputSize(state->renderer.get(), &window_w, &window_h);
     if (state->texture) {
         SDL_GetTextureSize(state->texture.get(), &texture_w, &texture_h);
-        float scale = SDL_min(static_cast<float>(window_w) / texture_w, static_cast<float>(window_h) / texture_h);
+        float scale = SDL_max(static_cast<float>(window_w) / texture_w, static_cast<float>(window_h) / texture_h) * state->video_scale;
         dst_rect.w = texture_w * scale; dst_rect.h = texture_h * scale;
-        dst_rect.x = (static_cast<float>(window_w) - dst_rect.w) / 2.0f; dst_rect.y = (static_cast<float>(window_h) - dst_rect.h) / 2.0f;
+        dst_rect.x = (static_cast<float>(window_w) - dst_rect.w) / 2.0f + state->video_pan_x; dst_rect.y = (static_cast<float>(window_h) - dst_rect.h) / 2.0f + state->video_pan_y;
     }
 
     // Start ImGui Frame Rendering Chain
@@ -278,7 +328,7 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
     }
 
     // Render hardware elements
-    SDL_SetRenderDrawColor(state->renderer.get(), 30, 30, 30, 255);
+    SDL_SetRenderDrawColor(state->renderer.get(), 50, 50, 50, 255);
     SDL_RenderClear(state->renderer.get());
     if (state->texture) {
         SDL_RenderTexture(state->renderer.get(), state->texture.get(), NULL, &dst_rect);
@@ -293,5 +343,11 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
 
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     auto *state = static_cast<AppState*>(appstate);
-    if (state) delete state;
+    if (state) {
+        state->stop();
+        delete state;
+    }
+    ImGui_ImplSDLRenderer3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
 }
