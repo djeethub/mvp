@@ -231,7 +231,7 @@ public:
     }
 
     template <typename AudioFeedFunc, typename VideoFeedFunc>
-    bool feed_frame(AudioFeedFunc audio_feed, VideoFeedFunc video_feed) {
+    int feed_frame(AudioFeedFunc audio_feed, VideoFeedFunc video_feed) {
         if (!packet) {
             packet = av_packet_alloc();
         }
@@ -240,12 +240,12 @@ public:
         }
         if (!packet || !frame || !format_ctx) {
             std::cerr << "FFmpeg packet/frame state is not initialized.\n";
-            return false;
+            return AVERROR_UNKNOWN;
         }
 
-        if (av_read_frame(format_ctx, packet) < 0) {
-            return false;
-        }
+        auto read_result = av_read_frame(format_ctx, packet);
+        if (read_result < 0)
+            return read_result;
 
         if (packet->stream_index == audio_stream_index) {
             if (audio_codec_ctx && swr_ctx && avcodec_send_packet(audio_codec_ctx, packet) >= 0) {
@@ -293,7 +293,7 @@ public:
         }
 
         av_packet_unref(packet);
-        return true;
+        return read_result;
     }
 
     void scale_video_frame(AVFrame* frame, AVFrame* converted_frame) {
@@ -374,6 +374,20 @@ public:
         }
         const auto* stream = format_ctx->streams[video_stream_index];
         return stream ? av_q2d(stream->time_base) : 0.0;
+    }
+
+    int64_t seek(int64_t ts)
+    {
+        int seek_result = avformat_seek_file(
+                format_ctx,
+                -1,
+                INT64_MIN, ts, INT64_MAX,
+                AVSEEK_FLAG_BACKWARD);
+        if (seek_result >= 0) {
+            avcodec_flush_buffers(audio_codec_ctx);
+            avcodec_flush_buffers(video_codec_ctx);
+        }
+        return seek_result;
     }
 
 private:

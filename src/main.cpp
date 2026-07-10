@@ -184,15 +184,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
  */
     if (event->type == SDL_EVENT_MOUSE_WHEEL && !ImGui::GetIO().WantCaptureMouse) {
         if (event->wheel.y < 0) {
-            if (state->image_files.size() > 1) {
-                state->current_index = (state->current_index + 1) % state->image_files.size();
-                state->load_image_at_index();
-            }
         } else if (event->wheel.y > 0) {
-            if (state->image_files.size() > 1) {
-                state->current_index = (state->current_index + state->image_files.size() - 1) % state->image_files.size();
-                state->load_image_at_index();
-            }
         }
     }
 
@@ -204,13 +196,13 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         switch (event->key.key) {
             case SDLK_ESCAPE: return quit(SDL_APP_SUCCESS, state);
             case SDLK_RETURN:
-            case SDLK_RIGHTBRACKET:
+            case SDLK_PERIOD:
                 if (state->image_files.size() > 1) {
                     state->current_index = (state->current_index + 1) % state->image_files.size();
                     state->load_image_at_index();
                 }
                 break;
-            case SDLK_LEFTBRACKET:
+            case SDLK_COMMA:
                 if (state->image_files.size() > 1) {
                     state->current_index = (state->current_index + state->image_files.size() - 1) % state->image_files.size();
                     state->load_image_at_index();

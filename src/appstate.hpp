@@ -47,6 +47,7 @@ struct AppState {
     std::queue<AVFrame *> frame_queue;
     std::queue<AVFrame *> frame_trash;
     uint64_t tick_diff = 0;
+    int64_t first_video_pts = AV_NOPTS_VALUE;
     double video_time_base = 0.0;
     double audio_time_base = 0.0;
     SDL_AudioDeviceID audio_device_id = 0;
@@ -55,6 +56,7 @@ struct AppState {
     float video_scale = 1.0;
     float video_pan_x = 0.0;
     float video_pan_y = 0.0;
+    bool is_loop = true;
 
     AppState() = default;
     ~AppState() {
@@ -92,6 +94,7 @@ struct AppState {
         texture.reset();
         clear_frame_buffers();
         video.close();
+        first_video_pts = AV_NOPTS_VALUE;
     }
 
     void stop() {
@@ -141,7 +144,8 @@ struct AppState {
                     audio_device_id = dev_id;
                     SDL_BindAudioStream(dev_id, audio_stream.get());
                     SDL_ResumeAudioDevice(dev_id);
-                } else
+                }
+                else
                     SDL_Log("Audio Error: %s", SDL_GetError());
                 SDL_free(devices);
             }
@@ -175,7 +179,6 @@ struct AppState {
         resize_window();
         SDL_SetWindowTitle(window.get(), filename.c_str());
 
-        set_play_time(0);
         is_running.store(true, std::memory_order_release);
         fetch_thread = std::thread(fetch_thread_worker, this);
         return true;
@@ -184,7 +187,7 @@ struct AppState {
     bool read_next_frame() {
         bool done = false;
         while (!done) {
-            if (!video.feed_frame([&](uint8_t *out_data, int out_size) -> void {
+            auto read_result = video.feed_frame([&](uint8_t *out_data, int out_size) -> void {
                 // Feed the raw sound bytes to SDL3's background mixer
                 if (audio_stream && !SDL_PutAudioStreamData(audio_stream.get(), out_data, out_size)) {
                     SDL_Log("Audio Stream Error: %s", SDL_GetError());
@@ -201,23 +204,35 @@ struct AppState {
                     new_frame = video.alloc_converted_frame();
                 video.scale_video_frame(frame, new_frame);
                 new_frame->pts = frame->pts;
+                if (first_video_pts == AV_NOPTS_VALUE && frame->pts != AV_NOPTS_VALUE)
+                {
+                    first_video_pts = frame->pts;
+                }
                 frame_queue.push(new_frame);
                 done = true;
-            })) {
-                return false; // No more frames available
+            });
+            if (read_result < 0) {
+                if (read_result == AVERROR_EOF && is_loop) {
+                    seek(0, false);
+                    continue;
+                }
+                return false;
             }
         }
         return true;
     }
 
-    uint32_t time_next_frame() {
-        uint32_t interval = 200;
+    uint32_t time_next_frame(uint32_t interval = 200)
+    {
         if (video.is_video() && !frame_queue.empty()) {
             if (video_frame)
                 frame_trash.push(video_frame); // Move the current frame to the trash queue
-            video_frame.store(frame_queue.front(), std::memory_order_release); // Update the current frame pointer
+            auto frame = frame_queue.front();
+            video_frame.store(frame, std::memory_order_release); // Update the current frame pointer
             frame_queue.pop(); // Remove the frame from the queue
-
+            if (frame->pts == first_video_pts) {
+                set_play_time(static_cast<uint32_t>(frame->pts * video_time_base * 1000.0));
+            }
             SDL_Event event;
             SDL_zero(event);
             event.type = USEREVENT_NEXT_FRAME;
@@ -232,14 +247,21 @@ struct AppState {
             auto curr_ticks = SDL_GetTicks();
             while (true) {
                 auto frame = frame_queue.front();
-                auto frame_time = static_cast<uint32_t>(frame->pts * video_time_base * 1000.0) + tick_diff; // Convert to milliseconds
-                if (frame_time > curr_ticks) {
-                    interval = frame_time - curr_ticks;
-                    break;
+                if (frame->pts != AV_NOPTS_VALUE) {
+                    if (frame->pts == first_video_pts) {
+                        break;
+                    }
+                    auto frame_time = static_cast<uint32_t>(frame->pts * video_time_base * 1000.0) + tick_diff; // Convert to milliseconds
+                    if (frame_time > curr_ticks)
+                    {
+                        interval = frame_time - curr_ticks;
+                        break;
+                    }
                 }
                 // If the frame is already due, pop it and check the next one
                 frame_trash.push(video_frame); // Move the current frame to the trash queue
-                video_frame.store(frame_queue.front(), std::memory_order_release); // Update the current frame pointer
+                if (frame->pts != AV_NOPTS_VALUE)
+                    video_frame.store(frame_queue.front(), std::memory_order_release); // Update the current frame pointer
                 frame_queue.pop(); // Remove the frame from the queue
                 read_next_frame();
                 if (frame_queue.empty()) {
@@ -257,9 +279,22 @@ struct AppState {
         return interval;
     }
 
+    bool seek(int64_t ts, bool reset) {
+        if (video.seek(ts) >= 0)
+        {
+            if (reset) {
+                clear_frame_buffers();
+            }
+            return true;
+        }
+        return false;
+    }
+
     static void fetch_thread_worker(AppState* state) {
-        while (state->is_running.load(std::memory_order_acquire)) {
-            auto interval = state->time_next_frame();
+        uint32_t interval = 200;
+        while (state->is_running.load(std::memory_order_acquire))
+        {
+            interval = state->time_next_frame(interval);
             if (interval == 0)
                 break;
             std::this_thread::sleep_for(std::chrono::milliseconds(interval));
