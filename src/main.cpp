@@ -104,8 +104,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 
     if (event->type == USEREVENT_NEXT_FRAME) {
-        auto video_frame = state->video_frame.load(std::memory_order_acquire);
-        SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
+        auto video_frame = state->video_frame;
+        if (video_frame)
+            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
         return SDL_APP_CONTINUE;
     }
 
@@ -212,6 +213,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     gui.show_noti("Window Scale: 2");
                 }
                 break;
+            case SDLK_RIGHT:
+                state->seek_relative(5);
+                break;
+            case SDLK_LEFT:
+                state->seek_relative(-5);
+                break;
             }
     }
 
@@ -293,7 +300,7 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     auto *state = static_cast<AppState*>(appstate);
     if (state) {
-        state->stop();
+        state->shutdown();
         delete state;
     }
 }

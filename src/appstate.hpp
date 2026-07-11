@@ -9,9 +9,10 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
-#include <atomic>
 #include <thread>
 #include <queue>
+#include <mutex>
+#include <condition_variable>
 
 #include "utils.hpp"
 #include "ffmpeg.hpp"
@@ -43,20 +44,23 @@ struct AppState {
     AudioStream audio_stream{nullptr, SDL_DestroyAudioStream};
 
     ff::VideoFile video;
-    std::atomic<AVFrame *> video_frame{nullptr};
+    AVFrame *video_frame = nullptr;
     std::queue<AVFrame *> frame_queue;
     std::queue<AVFrame *> frame_trash;
-    uint64_t tick_diff = 0;
+    double tick_diff = 0;
     int64_t first_video_pts = AV_NOPTS_VALUE;
     double video_time_base = 0.0;
     double audio_time_base = 0.0;
     SDL_AudioDeviceID audio_device_id = 0;
-    std::atomic<bool> is_running{false};
     std::thread fetch_thread;
     float video_scale = 1.0;
     float video_pan_x = 0.0;
     float video_pan_y = 0.0;
     bool is_loop = true;
+    bool need_play_time_update = true;
+    std::mutex fetch_mutex;
+    std::condition_variable fetch_cv;
+    int fetch_status = 0;   // 0 = running, 1 = reset, -1 = shutdown
 
     AppState() = default;
     ~AppState()
@@ -80,10 +84,23 @@ struct AppState {
             av_frame_free(&frame_trash.front());
             frame_trash.pop();
         }
+        if (video_frame)
+            av_frame_free(&video_frame);
+    }
+
+    void trash_frame_buffers()
+    {
         if (video_frame) {
-            auto frame = video_frame.exchange(nullptr);
-            av_frame_free(&frame);
+            frame_trash.push(video_frame);
+            video_frame = nullptr;
         }
+        while (!frame_queue.empty())
+        {
+            frame_trash.push(frame_queue.front());
+            frame_queue.pop();
+        }
+        if (audio_stream)
+            SDL_ClearAudioStream(audio_stream.get());
     }
 
     void reset_runtime_state() {
@@ -98,24 +115,26 @@ struct AppState {
         first_video_pts = AV_NOPTS_VALUE;
     }
 
-    void stop() {
-        if (!is_running.exchange(false, std::memory_order_release)) {
-            return;
+    bool shutdown() {
+        {
+            std::lock_guard<std::mutex> lock(fetch_mutex);
+            fetch_status = -1;
         }
-        if (fetch_thread.joinable()) {
+        if (fetch_thread.joinable())
             fetch_thread.join();
-        }
         SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+        return true;
     }
 
     bool load_image_at_index() {
         if (image_files.empty() || !renderer) return false;
 
-        stop();
+        std::lock_guard<std::mutex> lock(fetch_mutex);
+        reset_runtime_state();
+        trash_frame_buffers();
+
         const auto &filename = image_files[current_index];
         fs::path full = fs::path(parent_dir) / filename;
-
-        reset_runtime_state();
 
         if (!video.open(full.string())) {
             return false;
@@ -180,8 +199,9 @@ struct AppState {
         resize_window();
         SDL_SetWindowTitle(window.get(), filename.c_str());
 
-        is_running.store(true, std::memory_order_release);
-        fetch_thread = std::thread(fetch_thread_worker, this);
+        fetch_status = 1;
+        if (!fetch_thread.joinable())
+            fetch_thread = std::thread(fetch_thread_worker, this);
         return true;
     }
 
@@ -228,11 +248,11 @@ struct AppState {
         if (video.is_video() && !frame_queue.empty()) {
             if (video_frame)
                 frame_trash.push(video_frame); // Move the current frame to the trash queue
-            auto frame = frame_queue.front();
-            video_frame.store(frame, std::memory_order_release); // Update the current frame pointer
+            video_frame = frame_queue.front();
             frame_queue.pop(); // Remove the frame from the queue
-            if (frame->pts == first_video_pts) {
-                set_play_time(static_cast<uint32_t>(frame->pts * video_time_base * 1000.0));
+            if (need_play_time_update || video_frame->pts == first_video_pts)
+            {
+                set_play_time(video_frame->pts * video_time_base);
             }
             SDL_Event event;
             SDL_zero(event);
@@ -245,25 +265,28 @@ struct AppState {
             if (frame_queue.empty()) {
                 return 0; // Stop the timer if no more frames are available
             }
-            auto curr_ticks = SDL_GetTicks();
+            auto curr_ticks = get_ticks();
             while (true) {
                 auto frame = frame_queue.front();
                 if (frame->pts != AV_NOPTS_VALUE) {
                     if (frame->pts == first_video_pts) {
                         break;
                     }
-                    auto frame_time = static_cast<uint32_t>(frame->pts * video_time_base * 1000.0) + tick_diff; // Convert to milliseconds
+                    auto frame_time = frame->pts * video_time_base + tick_diff; // Convert to milliseconds
                     if (frame_time > curr_ticks)
                     {
-                        interval = frame_time - curr_ticks;
+                        interval = static_cast<uint32_t>((frame_time - curr_ticks) * 1000.0);
                         break;
+                    } else {
+                        if (video_frame)
+                            frame_trash.push(video_frame);
+                        video_frame = frame_queue.front();
+                        frame_queue.pop();
                     }
+                } else {
+                    frame_trash.push(frame);
+                    frame_queue.pop();
                 }
-                // If the frame is already due, pop it and check the next one
-                frame_trash.push(video_frame); // Move the current frame to the trash queue
-                if (frame->pts != AV_NOPTS_VALUE)
-                    video_frame.store(frame_queue.front(), std::memory_order_release); // Update the current frame pointer
-                frame_queue.pop(); // Remove the frame from the queue
                 read_next_frame();
                 if (frame_queue.empty()) {
                     interval = 0; // Stop the timer if no more frames are available
@@ -280,34 +303,64 @@ struct AppState {
         return interval;
     }
 
-    bool seek(int64_t ts, bool reset) {
-        if (video.seek(ts) >= 0)
+    bool seek(double ts, bool reset) {
+        if (reset)
         {
-            if (reset) {
-                clear_frame_buffers();
+            std::lock_guard<std::mutex> lock(fetch_mutex);
+            if (video.seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0)
+            {
+                trash_frame_buffers();
+                need_play_time_update = true;
+                read_next_frame();
+                fetch_status = 1;
+                return true;
             }
+        } else if (video.seek(ts) >= 0)
+        {
             return true;
         }
         return false;
     }
 
-    static void fetch_thread_worker(AppState* state) {
+    bool seek_relative(double t) {
+        auto target_time = get_play_time();
+        auto duration = video.get_duration();
+        target_time += t;
+        if (target_time < 0.0)
+            target_time = 0.0;
+        else if (target_time > duration)
+            target_time = duration;
+        return seek(target_time, true);
+    }
+
+    static void fetch_thread_worker(AppState *state)
+    {
         uint32_t interval = 200;
-        while (state->is_running.load(std::memory_order_acquire))
+        while (true)
         {
+            std::unique_lock<std::mutex> lock(state->fetch_mutex);
+            if (state->fetch_status < 0)
+                break;
+            state->fetch_status = 0;
             interval = state->time_next_frame(interval);
             if (interval == 0)
                 break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(interval));
+            state->fetch_cv.wait_for(lock, std::chrono::milliseconds(interval), [state]{ return state->fetch_status != 0; });
         }
     }
 
-    inline void set_play_time(uint64_t play_time) {
-        tick_diff = SDL_GetTicks() - play_time;
+    static double get_ticks() {
+        return static_cast<double>(SDL_GetTicks()) / 1000.0;
     }
 
-    inline uint64_t get_play_time() const {
-        return SDL_GetTicks() - tick_diff;
+    void set_play_time(double play_time)
+    {
+        tick_diff = get_ticks() - play_time;
+        need_play_time_update = false;
+    }
+
+    double get_play_time() const {
+        return get_ticks() - tick_diff;
     }
 
     void resize_window(float window_scale = 1.0) {
