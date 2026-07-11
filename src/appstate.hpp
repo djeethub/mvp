@@ -246,7 +246,7 @@ struct AppState {
         return true;
     }
 
-    uint32_t time_next_frame(uint32_t interval = 200)
+    double time_next_frame(double interval = 0.2)
     {
         if (video.is_video() && !frame_queue.empty()) {
             if (video_frame)
@@ -254,13 +254,10 @@ struct AppState {
             video_frame = frame_queue.front();
             frame_queue.pop(); // Remove the frame from the queue
             if (need_play_time_update || video_frame->pts == first_video_pts)
-            {
                 set_play_time(video_frame->pts * video_time_base);
-            }
             SDL_Event event;
             SDL_zero(event);
             event.type = USEREVENT_NEXT_FRAME;
-            // Push it to the main event loop
             SDL_PushEvent(&event);
         }
         read_next_frame(); // Preload the next frame
@@ -278,7 +275,9 @@ struct AppState {
                     auto frame_time = frame->pts * video_time_base + tick_diff; // Convert to milliseconds
                     if (frame_time > curr_ticks)
                     {
-                        interval = static_cast<uint32_t>((frame_time - curr_ticks) * 1000.0);
+                        interval = frame_time - curr_ticks;
+                        if (interval == 0)
+                            interval = 0.001;
                         break;
                     } else {
                         if (video_frame)
@@ -362,7 +361,7 @@ struct AppState {
     
     static void fetch_thread_worker(AppState *state)
     {
-        uint32_t interval = 200;
+        double interval = 0.2;
         while (true)
         {
             std::unique_lock<std::mutex> lock(state->fetch_mutex);
@@ -372,7 +371,7 @@ struct AppState {
             interval = state->time_next_frame(interval);
             if (interval == 0)
                 break;
-            state->fetch_cv.wait_for(lock, std::chrono::milliseconds(interval), [state]{ return state->fetch_status != 0; });
+            state->fetch_cv.wait_for(lock, std::chrono::microseconds(static_cast<int64_t>(interval * 1000000)), [state]{ return state->fetch_status != 0; });
         }
     }
 

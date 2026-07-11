@@ -259,8 +259,10 @@ public:
                 INT64_MIN, ts, INT64_MAX,
                 AVSEEK_FLAG_BACKWARD);
         if (seek_result >= 0) {
-            avcodec_flush_buffers(audio_codec_ctx);
-            avcodec_flush_buffers(video_codec_ctx);
+            if (audio_codec_ctx)
+                avcodec_flush_buffers(audio_codec_ctx);
+            if (video_codec_ctx)
+                avcodec_flush_buffers(video_codec_ctx);
         }
         return seek_result;
     }
