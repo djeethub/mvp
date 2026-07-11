@@ -2,54 +2,12 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
-// Include Dear ImGui Headers
-#include "imgui.h"
-#include "imgui_impl_sdl3.h"
-#include "imgui_impl_sdlrenderer3.h"
-
 #include "appstate.hpp"
+#include "gui.hpp"
 
 constexpr int BORDER_SIZE = 5;
 #define PAN_N   5
-#define SCALE_N 0.005
-
-namespace {
-std::string shell_quote(const std::string &value) {
-    std::string escaped = "'";
-    for (char c : value) {
-        if (c == '\'') {
-            escaped += "'\\''";
-        } else {
-            escaped += c;
-        }
-    }
-    escaped += "'";
-    return escaped;
-}
-
-bool open_file_location(const fs::path &file_path) {
-    const fs::path parent_dir = file_path.parent_path();
-    const std::string quoted_file = shell_quote(file_path.string());
-    const std::string quoted_dir = shell_quote(parent_dir.string());
-
-    const std::vector<std::string> commands = {
-        "nautilus --select " + quoted_file,
-        "nemo --select " + quoted_file,
-        "caja --select " + quoted_file,
-        "dolphin --select " + quoted_file,
-        "thunar --select " + quoted_file,
-        "xdg-open " + quoted_dir
-    };
-
-    for (const auto &command : commands) {
-        if (std::system(command.c_str()) == 0) {
-            return true;
-        }
-    }
-
-    return false;
-}
-}
+#define SCALE_N 0.01
 
 static SDL_HitTestResult SDLCALL WindowHitTest(SDL_Window *win, const SDL_Point *area, void *data) {
     if (ImGui::GetIO().WantCaptureMouse) return SDL_HITTEST_NORMAL;
@@ -75,6 +33,8 @@ uint32_t SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, uint32_t int
     auto *state = static_cast<AppState*>(userdata);
     return state->time_next_frame();
 }
+
+AppGui gui;
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     if (argc < 2 || !argv[1]) return SDL_APP_FAILURE;
@@ -131,30 +91,17 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     if (!state->load_image_at_index()) { delete state; return SDL_APP_FAILURE; }
     SDL_ShowWindow(state->window.get());
 
-    // Initialize Dear ImGui Context
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = NULL; // Disable default ini handling
-    ImGui::StyleColorsDark();
-
-    // Setup Platform/Renderer Backends
-    ImGui_ImplSDL3_InitForSDLRenderer(state->window.get(), state->renderer.get());
-    ImGui_ImplSDLRenderer3_Init(state->renderer.get());
+    gui.init(state);
 
     SDL_ShowWindow(state->window.get());
     return SDL_APP_CONTINUE;
-}
-
-inline SDL_AppResult quit(SDL_AppResult rlt, AppState *state) {
-    return rlt;
 }
 
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     auto *state = static_cast<AppState*>(appstate);
     ImGui_ImplSDL3_ProcessEvent(event);
 
-    if (event->type == SDL_EVENT_QUIT) return quit(SDL_APP_SUCCESS, state);
+    if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 
     if (event->type == USEREVENT_NEXT_FRAME) {
         auto video_frame = state->video_frame.load(std::memory_order_acquire);
@@ -194,7 +141,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
     if (event->type == SDL_EVENT_KEY_DOWN) {
         switch (event->key.key) {
-            case SDLK_ESCAPE: return quit(SDL_APP_SUCCESS, state);
+            case SDLK_ESCAPE: return SDL_APP_SUCCESS;
             case SDLK_RETURN:
             case SDLK_PERIOD:
                 if (state->image_files.size() > 1) {
@@ -217,53 +164,52 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                 break;
             case SDLK_KP_9:
                 state->video_scale += SCALE_N;
+                gui.show_noti(std::format("Video Scale: {:.2f}", state->video_scale));
                 break;
             case SDLK_KP_1:
                 state->video_scale -= SCALE_N;
+                gui.show_noti(std::format("Video Scale: {:.2f}", state->video_scale));
                 break;
             case SDLK_KP_5:
                 state->video_scale = 1;
                 state->video_pan_x = 0;
                 state->video_pan_y = 0;
+                gui.show_noti("Video Reset");
                 break;
-            case SDLK_LEFT:
-                if (event->key.mod & SDL_KMOD_ALT) {
-                    state->video_pan_x -= PAN_N;
-                }
+            case SDLK_KP_4:
+                state->video_pan_x -= PAN_N;
+                gui.show_noti(std::format("Video Pan X: {}", state->video_pan_x));
                 break;
-            case SDLK_RIGHT:
-                if (event->key.mod & SDL_KMOD_ALT)
-                {
-                    state->video_pan_x += PAN_N;
-                }
+            case SDLK_KP_6:
+                state->video_pan_x += PAN_N;
+                gui.show_noti(std::format("Video Pan X: {}", state->video_pan_x));
                 break;
-            case SDLK_UP:
-                if (event->key.mod & SDL_KMOD_ALT)
-                {
-                    state->video_pan_y -= PAN_N;
-                }
+            case SDLK_KP_8:
+                state->video_pan_y -= PAN_N;
+                gui.show_noti(std::format("Video Pan Y: {}", state->video_pan_y));
                 break;
-            case SDLK_DOWN:
-                if (event->key.mod & SDL_KMOD_ALT)
-                {
-                    state->video_pan_y += PAN_N;
-                }
+            case SDLK_KP_2:
+                state->video_pan_y += PAN_N;
+                gui.show_noti(std::format("Video Pan Y: {}", state->video_pan_y));
                 break;
             case SDLK_1:
                 if (event->key.mod & SDL_KMOD_ALT) {
                     state->resize_window(0.5);
+                    gui.show_noti("Window Scale: 0.5");
                 }
                 break;
             case SDLK_2:
                 if (event->key.mod & SDL_KMOD_ALT)
                 {
                     state->resize_window(1);
+                    gui.show_noti("Window Scale: 1");
                 }
                 break;
             case SDLK_3:
                 if (event->key.mod & SDL_KMOD_ALT)
                 {
                     state->resize_window(2);
+                    gui.show_noti("Window Scale: 2");
                 }
                 break;
             }
@@ -272,6 +218,48 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     return SDL_APP_CONTINUE;
 }
 
+/* inline void DrawOSD(AppState *state)
+{
+    // 1. Check if the OSD has expired
+    if (SDL_GetTicks() > state->osd_noti.expires_at)
+    {
+        return; // Stale message, don't render anything
+    }
+
+    // 2. Position the OSD in the top-right corner of the viewport
+    // (You can change this to center or bottom depending on preference)
+    const float PADDING = 20.0f;
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    ImVec2 target_pos = ImVec2(
+        viewport->WorkPos.x + PADDING,
+        viewport->WorkPos.y + PADDING);
+
+    // Set pivot point to top-right (1.0f, 0.0f) so padding scales correctly
+    ImGui::SetNextWindowPos(target_pos, ImGuiCond_Always, ImVec2(0.0f, 0.0f));
+
+    // Make the background semi-transparent black
+    ImGui::SetNextWindowBgAlpha(0.0f);
+
+    // 3. Configure window flags to make it completely non-interactive
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
+                             ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoSavedSettings |
+                             ImGuiWindowFlags_NoFocusOnAppearing |
+                             ImGuiWindowFlags_NoNav |
+                             ImGuiWindowFlags_NoMove;
+
+    // 4. Render the window
+    if (ImGui::Begin("##OSD_Overlay", nullptr, flags))
+    {
+        // Optional: Make text larger or use a bold font if loaded
+        ImGui::SetWindowFontScale(2.0f);
+
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", state->osd_noti.text.c_str());
+
+        ImGui::End();
+    }
+}
+ */
 SDL_AppResult SDL_AppIterate(void *appstate) {
     auto *state = static_cast<AppState*>(appstate);
 
@@ -287,38 +275,6 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
         dst_rect.x = (static_cast<float>(window_w) - dst_rect.w) / 2.0f + state->video_pan_x; dst_rect.y = (static_cast<float>(window_h) - dst_rect.h) / 2.0f + state->video_pan_y;
     }
 
-    // Start ImGui Frame Rendering Chain
-    ImGui_ImplSDLRenderer3_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
-
-    if (state->trigger_context_menu) {
-        ImGui::OpenPopup("mymenu");
-        state->trigger_context_menu = false;
-    }
-
-    if (ImGui::BeginPopup("mymenu")) {
-        if (ImGui::MenuItem("Next Image", "Space", false, state->image_files.size() > 1)) {
-            state->current_index = (state->current_index + 1) % state->image_files.size();
-            state->load_image_at_index();
-        }
-        if (ImGui::MenuItem("Previous Image", "Backspace", false, state->image_files.size() > 1)) {
-            state->current_index = (state->current_index + state->image_files.size() - 1) % state->image_files.size();
-            state->load_image_at_index();
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Open File Location", "Ctrl+L")) {
-            const auto &filename = state->image_files[state->current_index];
-            const fs::path full = fs::path(state->parent_dir) / filename;
-            open_file_location(full);
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Exit", "Esc")) {
-            return quit(SDL_APP_SUCCESS, state);
-        }
-        ImGui::EndPopup();
-    }
-
     // Render hardware elements
     SDL_SetRenderDrawColor(state->renderer.get(), 50, 50, 50, 255);
     SDL_RenderClear(state->renderer.get());
@@ -326,8 +282,9 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
         SDL_RenderTexture(state->renderer.get(), state->texture.get(), NULL, &dst_rect);
     }
 
-    ImGui::Render();
-    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), state->renderer.get());
+    auto app_result = gui.draw();
+    if (app_result != SDL_APP_CONTINUE)
+        return app_result;
 
     SDL_RenderPresent(state->renderer.get());
     return SDL_APP_CONTINUE;
@@ -339,7 +296,4 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
         state->stop();
         delete state;
     }
-    ImGui_ImplSDLRenderer3_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
 }

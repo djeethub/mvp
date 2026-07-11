@@ -59,7 +59,8 @@ struct AppState {
     bool is_loop = true;
 
     AppState() = default;
-    ~AppState() {
+    ~AppState()
+    {
         reset_runtime_state();
     }
 
