@@ -12,6 +12,13 @@ extern "C" {
 }
 
 namespace ff {
+
+struct ChapterData {
+    std::string title;
+    double start_time; // in seconds
+    double end_time;   // in seconds
+};
+
 class VideoFile {
 public:
     VideoFile() = default;
@@ -260,6 +267,39 @@ public:
 
     double get_duration() {
         return format_ctx->duration / (double)AV_TIME_BASE;
+    }
+
+    std::vector<ChapterData> ReadChapters() {
+        std::vector<ChapterData> chapter_list;
+
+        // 1. Check if the file actually contains any chapters
+        if (format_ctx->nb_chapters == 0) {
+            return chapter_list;
+        }
+
+        // 2. Iterate through the chapters array
+        for (unsigned int i = 0; i < format_ctx->nb_chapters; i++) {
+            AVChapter* chapter = format_ctx->chapters[i];
+            ChapterData data;
+
+            // 3. Convert timestamps from the chapter's unique timebase into seconds
+            double timebase_factor = av_q2d(chapter->time_base);
+            data.start_time = chapter->start * timebase_factor;
+            data.end_time   = chapter->end * timebase_factor;
+
+            // 4. Extract the chapter title string from the metadata dictionary
+            AVDictionaryEntry* title_tag = av_dict_get(chapter->metadata, "title", nullptr, 0);
+            if (title_tag && title_tag->value) {
+                data.title = title_tag->value;
+            } else {
+                // Fallback string if the chapter is unnamed (e.g., "Chapter 1")
+                data.title = "Chapter " + std::to_string(i + 1);
+            }
+
+            chapter_list.push_back(data);
+        }
+
+        return chapter_list;
     }
 
 private:

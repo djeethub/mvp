@@ -81,10 +81,33 @@ class AppGui {
             io.IniFilename = NULL; // Disable default ini handling
             ImGui::StyleColorsDark();
 
+            // 3. Load the fonts from your local system or project directory
+            // Arguments: (Filepath, Font Size in pixels, Config Struct, Glyph Ranges)
+            uiFont  = io.Fonts->AddFontFromFileTTF("/usr/share/fonts/open-sans/OpenSans-Regular.ttf", 16.0f);
+            osdFont = io.Fonts->AddFontFromFileTTF("/usr/share/fonts/open-sans/OpenSans-Bold.ttf", 32.0f);
+
+            // 4. Fallback safeguard: If files are missing, default back to ProggyClean safely
+            if (uiFont == nullptr)  uiFont  = io.Fonts->AddFontDefault();
+            if (osdFont == nullptr) osdFont = io.Fonts->AddFontDefault();            
+
             // Setup Platform/Renderer Backends
             ImGui_ImplSDL3_InitForSDLRenderer(state->window.get(), state->renderer.get());
             ImGui_ImplSDLRenderer3_Init(state->renderer.get());
         }
+
+        void DrawTextWithOutline(ImDrawList* draw_list, ImFont* font, float font_size, ImVec2 screen_pos, const char* text, ImU32 text_color, ImU32 outline_color, float stroke_thickness) {
+            // Draw the 8-directional shadow offset boundary
+            for (float x = -stroke_thickness; x <= stroke_thickness; x += stroke_thickness) {
+                for (float y = -stroke_thickness; y <= stroke_thickness; y += stroke_thickness) {
+                    if (x == 0.0f && y == 0.0f) continue; // Skip the exact center
+                    
+                    draw_list->AddText(font, font_size, ImVec2(screen_pos.x + x, screen_pos.y + y), outline_color, text);
+                }
+            }
+
+            // Overlay the pristine main text inside the middle slot
+            draw_list->AddText(font, font_size, screen_pos, text_color, text);
+        }        
 
         SDL_AppResult draw()
         {
@@ -98,17 +121,21 @@ class AppGui {
 
             if (text_expires_at > curr_ticks)
             {
-                ImGui::SetNextWindowPos(ImVec2(20, 20));
-                ImGui::Begin("Text", nullptr,
-                             ImGuiWindowFlags_NoTitleBar |
-                                 ImGuiWindowFlags_NoResize |
-                                 ImGuiWindowFlags_NoMove |
-                                 ImGuiWindowFlags_NoScrollbar |
-                                 ImGuiWindowFlags_NoBackground |
-                                 ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                 ImGuiWindowFlags_AlwaysAutoResize);
-                ImGui::Text(noti_text.c_str());
-                ImGui::End();
+                ImDrawList* draw_list = ImGui::GetForegroundDrawList();
+                ImVec2 osd_pos = ImVec2(50.0f, 50.0f); // Top left screen alignment
+//                ImGui::Text(noti_text.c_str());
+                ImGui::PushFont(osdFont);
+                DrawTextWithOutline(
+                    draw_list, 
+                    ImGui::GetFont(), 
+                    ImGui::GetFontSize() * 1.5f, // Scaled slightly larger for OSD
+                    osd_pos, 
+                    noti_text.c_str(), 
+                    IM_COL32(255, 255, 255, 255), // Pure White Text
+                    IM_COL32(0, 0, 0, 200),       // Soft Transparent Black Outline
+                    1.5f                          // 1.5-pixel outline stroke thickness
+                );
+                ImGui::PopFont();
             }
 
             if (slider_expires_at > curr_ticks) {
@@ -116,13 +143,18 @@ class AppGui {
                 auto size = ImVec2(io.DisplaySize.x * 0.8, io.DisplaySize.y * 0.05);
                 ImGui::SetNextWindowSize(size);
                 ImGui::Begin("Slider", nullptr,
-                             ImGuiWindowFlags_NoTitleBar |
-                                 ImGuiWindowFlags_NoResize |
-                                 ImGuiWindowFlags_NoMove |
-                                 ImGuiWindowFlags_NoScrollbar |
-                                 ImGuiWindowFlags_NoBackground |
-                                 ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                 ImGuiWindowFlags_AlwaysAutoResize);
+                            ImGuiWindowFlags_NoTitleBar |
+                            ImGuiWindowFlags_NoDecoration |
+                            ImGuiWindowFlags_NoResize |
+                            ImGuiWindowFlags_NoMove |
+                            ImGuiWindowFlags_NoSavedSettings |
+                            ImGuiWindowFlags_NoScrollbar |
+                            ImGuiWindowFlags_NoBackground |
+                            ImGuiWindowFlags_NoBringToFrontOnFocus |
+                            ImGuiWindowFlags_AlwaysAutoResize |
+                            ImGuiWindowFlags_NoFocusOnAppearing |
+                            ImGuiWindowFlags_NoNav |
+                            ImGuiWindowFlags_NoMove);
                 float v = 0.3;
                 ImGui::PushItemWidth(size.x);
                 ImGui::SliderFloat("##threshold", &v, 0.0f, 1.0f, "Threshold: %.3f");
@@ -178,4 +210,6 @@ class AppGui {
         std::string noti_text = "";
         uint64_t text_expires_at = 0; // Expiration time in SDL ticks (milliseconds)
         uint64_t slider_expires_at = 0;
+        ImFont* osdFont = nullptr;
+        ImFont* uiFont  = nullptr;
 };

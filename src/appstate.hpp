@@ -61,6 +61,7 @@ struct AppState {
     std::mutex fetch_mutex;
     std::condition_variable fetch_cv;
     int fetch_status = 0;   // 0 = running, 1 = reset, -1 = shutdown
+    std::vector<ff::ChapterData> chapter_list;
 
     AppState() = default;
     ~AppState()
@@ -193,6 +194,8 @@ struct AppState {
                 texture.reset(tex);
             }
         }
+
+        chapter_list = video.ReadChapters();
 
         read_next_frame();
         image_aspect = img_h > 0.0f ? img_w / img_h : 1.0f;
@@ -333,6 +336,30 @@ struct AppState {
         return seek(target_time, true);
     }
 
+    bool seek_to_chapter(int id) {
+        auto chapter = chapter_list[id];
+        return seek(chapter.start_time, true);
+    }
+
+    int get_relative_chapter(int n) {
+        if (chapter_list.size() <= 1)
+            return -1;
+
+        auto play_time = get_play_time();
+        for (int i = 0; i < chapter_list.size(); i++) {
+            auto chapter = chapter_list[i];
+            if (play_time >= chapter.start_time && play_time <= chapter.end_time) {
+                auto id = i + n;
+                if (id >= 0 && id < chapter_list.size()) {
+                    return id;
+                }
+                break;
+            }
+        }
+
+        return -1;
+    }
+    
     static void fetch_thread_worker(AppState *state)
     {
         uint32_t interval = 200;
