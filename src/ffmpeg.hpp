@@ -278,7 +278,7 @@ public:
                 format_ctx,
                 -1,
                 INT64_MIN, ts, INT64_MAX,
-                AVSEEK_FLAG_BACKWARD);
+                0);
         if (seek_result >= 0) {
             if (audio_codec_ctx)
                 avcodec_flush_buffers(audio_codec_ctx);

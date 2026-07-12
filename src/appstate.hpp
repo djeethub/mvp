@@ -242,8 +242,10 @@ struct AppState {
             });
             if (read_result < 0) {
                 if (read_result == AVERROR_EOF && is_loop) {
-                    seek(0, false);
-                    continue;
+                    if (seek(0, false)) {
+                        play_time = 0;
+                        continue;
+                    }
                 }
                 return false;
             }
@@ -358,13 +360,19 @@ struct AppState {
         if (chapter_list.size() <= 1)
             return -1;
 
-        if (n < 0)
-            n++;
         auto play_time = get_play_time();
         for (int i = 0; i < chapter_list.size(); i++) {
             auto chapter = chapter_list[i];
-            if (play_time <= chapter.end_time + 1) {
-                auto id = i + n;
+            if (play_time >= chapter.start_time && play_time <= chapter.end_time) {
+                auto id = i;
+                if (n > 0)
+                    id += n;
+                else if (n < 0) {
+                    if (play_time < chapter.start_time + 1)
+                        id += n;
+                    else
+                        id += n + 1;
+                }
                 if (id >= 0 && id < chapter_list.size()) {
                     return id;
                 }
