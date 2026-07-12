@@ -19,6 +19,25 @@ struct ChapterData {
     double end_time;   // in seconds
 };
 
+struct AudioBuffer {
+    uint8_t *buf = nullptr;
+    int size = 0;
+    int data_size = 0;
+
+    AudioBuffer() = default;
+    ~AudioBuffer() {
+        av_freep(&buf);
+    }
+    void init(int n)
+    {
+        if (size < n) {
+            av_freep(&buf);
+            av_samples_alloc(&buf, nullptr, 2, n, AV_SAMPLE_FMT_S16, 0);
+            size = n;
+        }
+    }
+};
+
 class VideoFile {
 public:
     VideoFile() = default;
@@ -145,37 +164,8 @@ public:
             {
                 while (avcodec_receive_frame(audio_codec_ctx, frame) >= 0)
                 {
-                    // 1. Calculate max potential samples we will get after conversion
-                    int out_samples = av_rescale_rnd(
-                        swr_get_delay(swr_ctx, 44100) + frame->nb_samples,
-                        44100,
-                        audio_codec_ctx->sample_rate,
-                        AV_ROUND_UP);
-
-                    // 2. Allocate pointers for the destination buffer (2 channels, S16 format)
-                    uint8_t *output_buffer = nullptr;
-                    av_samples_alloc(&output_buffer, nullptr, 2, out_samples, AV_SAMPLE_FMT_S16, 0);
-
-                    // 3. Perform the actual conversion safely
-                    int converted_samples = swr_convert(
-                        swr_ctx,
-                        &output_buffer,
-                        out_samples,
-                        (const uint8_t **)frame->data,
-                        frame->nb_samples);
-
-                    if (converted_samples > 0)
-                    {
-                        // Calculate the exact size of the resulting packed bytes
-                        // 2 channels * number of converted samples * 2 bytes per sample (S16)
-                        int buffer_size = converted_samples * 2 * sizeof(int16_t);
-
-                        // 4. Feed the clean, packed stereo bytes to PipeWire via SDL3
-                        audio_feed(output_buffer, buffer_size);
-                    }
-
-                    // Free the temporary buffer array
-                    av_freep(&output_buffer);
+                    if (frame->pts != AV_NOPTS_VALUE)
+                        audio_feed(frame);
                     av_frame_unref(frame);
                 }
             }
@@ -186,7 +176,8 @@ public:
             {
                 while (avcodec_receive_frame(video_codec_ctx, frame) >= 0)
                 {
-                    video_feed(frame);
+                    if (frame->pts != AV_NOPTS_VALUE)
+                        video_feed(frame);
                     av_frame_unref(frame);
                 }
             }
@@ -194,6 +185,36 @@ public:
         av_packet_unref(packet); // Recycle memory node cleanly
 
         return read_result;
+    }
+
+    void convert_audio_frame(AVFrame *frame, AudioBuffer *audio_buf)
+    {
+        // 1. Calculate max potential samples we will get after conversion
+        int out_samples = av_rescale_rnd(
+            swr_get_delay(swr_ctx, 44100) + frame->nb_samples,
+            44100,
+            audio_codec_ctx->sample_rate,
+            AV_ROUND_UP);
+
+        // 2. Allocate pointers for the destination buffer (2 channels, S16 format)
+        audio_buf->init(out_samples);
+
+        // 3. Perform the actual conversion safely
+        int converted_samples = swr_convert(
+            swr_ctx,
+            &audio_buf->buf,
+            out_samples,
+            (const uint8_t **)frame->data,
+            frame->nb_samples);
+
+        if (converted_samples > 0)
+        {
+            // Calculate the exact size of the resulting packed bytes
+            // 2 channels * number of converted samples * 2 bytes per sample (S16)
+            audio_buf->data_size = converted_samples * 2 * sizeof(int16_t);
+        }
+        else
+            audio_buf->data_size = 0;
     }
 
     void scale_video_frame(AVFrame *frame, AVFrame *converted_frame)

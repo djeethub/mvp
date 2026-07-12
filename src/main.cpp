@@ -104,7 +104,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 
     if (event->type == USEREVENT_NEXT_FRAME) {
-        auto video_frame = state->video_frame;
+        auto video_frame = state->video_frame.load(std::memory_order_acquire);
         if (video_frame)
             SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
         return SDL_APP_CONTINUE;
@@ -222,11 +222,17 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
             case SDLK_PAGEDOWN:
             case SDLK_PAGEUP:
+            {
                 auto id = state->get_relative_chapter(event->key.key == SDLK_PAGEDOWN ? 1 : -1);
                 if (!state->seek_to_chapter(id))
                     state->seek_relative(15);
                 else
                     gui.show_noti(state->chapter_list[id].title);
+            }
+                break;
+
+            case SDLK_SPACE:
+//                state->pause();
                 break;
             }
     }

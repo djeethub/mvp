@@ -122,13 +122,13 @@ class AppGui {
             if (text_expires_at > curr_ticks)
             {
                 ImDrawList* draw_list = ImGui::GetForegroundDrawList();
-                ImVec2 osd_pos = ImVec2(50.0f, 50.0f); // Top left screen alignment
+                ImVec2 osd_pos = ImVec2(20.0f, 20.0f); // Top left screen alignment
 //                ImGui::Text(noti_text.c_str());
                 ImGui::PushFont(osdFont);
                 DrawTextWithOutline(
                     draw_list, 
                     ImGui::GetFont(), 
-                    ImGui::GetFontSize() * 1.5f, // Scaled slightly larger for OSD
+                    ImGui::GetFontSize() * 1, // Scaled slightly larger for OSD
                     osd_pos, 
                     noti_text.c_str(), 
                     IM_COL32(255, 255, 255, 255), // Pure White Text

@@ -44,9 +44,10 @@ struct AppState {
     AudioStream audio_stream{nullptr, SDL_DestroyAudioStream};
 
     ff::VideoFile video;
-    AVFrame *video_frame = nullptr;
+    std::atomic<AVFrame *> video_frame;
     std::queue<AVFrame *> frame_queue;
     std::queue<AVFrame *> frame_trash;
+    ff::AudioBuffer audio_buf;
     double tick_diff = 0;
     int64_t first_video_pts = AV_NOPTS_VALUE;
     double video_time_base = 0.0;
@@ -62,6 +63,8 @@ struct AppState {
     std::condition_variable fetch_cv;
     int fetch_status = 0;   // 0 = running, 1 = reset, -1 = shutdown
     std::vector<ff::ChapterData> chapter_list;
+    double pause_time;
+    bool is_paused = false;
 
     AppState() = default;
     ~AppState()
@@ -77,6 +80,7 @@ struct AppState {
     }
 
     void clear_frame_buffers() {
+        video_frame = nullptr;
         while (!frame_queue.empty()) {
             av_frame_free(&frame_queue.front());
             frame_queue.pop();
@@ -85,16 +89,11 @@ struct AppState {
             av_frame_free(&frame_trash.front());
             frame_trash.pop();
         }
-        if (video_frame)
-            av_frame_free(&video_frame);
     }
 
-    void trash_frame_buffers()
+    void recycle_frame_buffers()
     {
-        if (video_frame) {
-            frame_trash.push(video_frame);
-            video_frame = nullptr;
-        }
+        video_frame = nullptr;
         while (!frame_queue.empty())
         {
             frame_trash.push(frame_queue.front());
@@ -111,8 +110,8 @@ struct AppState {
         }
         audio_stream.reset();
         texture.reset();
-        clear_frame_buffers();
         video.close();
+        clear_frame_buffers();
         first_video_pts = AV_NOPTS_VALUE;
     }
 
@@ -121,6 +120,7 @@ struct AppState {
             std::lock_guard<std::mutex> lock(fetch_mutex);
             fetch_status = -1;
         }
+        fetch_cv.notify_all();
         if (fetch_thread.joinable())
             fetch_thread.join();
         SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
@@ -132,7 +132,6 @@ struct AppState {
 
         std::lock_guard<std::mutex> lock(fetch_mutex);
         reset_runtime_state();
-        trash_frame_buffers();
 
         const auto &filename = image_files[current_index];
         fs::path full = fs::path(parent_dir) / filename;
@@ -197,29 +196,37 @@ struct AppState {
 
         chapter_list = video.ReadChapters();
 
-        read_next_frame();
+        read_next_frame(0);
         image_aspect = img_h > 0.0f ? img_w / img_h : 1.0f;
         resize_window();
         SDL_SetWindowTitle(window.get(), filename.c_str());
 
         fetch_status = 1;
+        fetch_cv.notify_all();
         if (!fetch_thread.joinable())
             fetch_thread = std::thread(fetch_thread_worker, this);
         return true;
     }
 
-    bool read_next_frame() {
+    bool read_next_frame(double play_time) {
         bool done = false;
         while (!done) {
-            auto read_result = video.feed_frame([&](uint8_t *out_data, int out_size) -> void {
-                // Feed the raw sound bytes to SDL3's background mixer
-                if (audio_stream && !SDL_PutAudioStreamData(audio_stream.get(), out_data, out_size)) {
-                    SDL_Log("Audio Stream Error: %s", SDL_GetError());
+            auto read_result = video.feed_frame([&](AVFrame *frame) -> void {
+                if (audio_stream) {
+                    if (frame->pts + audio_time_base < play_time)
+                        return;
+                    video.convert_audio_frame(frame, &audio_buf);
+                    // Feed the raw sound bytes to SDL3's background mixer
+                    if (audio_stream && !SDL_PutAudioStreamData(audio_stream.get(), audio_buf.buf, audio_buf.data_size)) {
+                        SDL_Log("Audio Stream Error: %s", SDL_GetError());
+                    }
                 }
                 if (!video.is_video()) {
                     done = true;
                 }
             },[&](AVFrame *frame) -> void {
+                if (frame->pts + audio_time_base < play_time) 
+                    return;
                 AVFrame *new_frame;
                 if (!frame_trash.empty()) {
                     new_frame = frame_trash.front();
@@ -228,10 +235,8 @@ struct AppState {
                     new_frame = video.alloc_converted_frame();
                 video.scale_video_frame(frame, new_frame);
                 new_frame->pts = frame->pts;
-                if (first_video_pts == AV_NOPTS_VALUE && frame->pts != AV_NOPTS_VALUE)
-                {
+                if (first_video_pts == AV_NOPTS_VALUE)
                     first_video_pts = frame->pts;
-                }
                 frame_queue.push(new_frame);
                 done = true;
             });
@@ -246,58 +251,64 @@ struct AppState {
         return true;
     }
 
+    bool check_next_frame(double curr_ticks) {
+        if (video.is_video()) {
+            AVFrame *frame_to_display = nullptr;
+            while (!frame_queue.empty()) {
+                auto frame = frame_queue.front();
+                if (need_play_time_update || frame->pts == first_video_pts) {
+                    set_play_time(frame->pts * video_time_base);
+                    frame_to_display = frame;
+                    frame_queue.pop();
+                    frame_trash.push(frame);
+                    break;
+                }
+                else
+                {
+                    auto frame_time = frame->pts * video_time_base + tick_diff;
+                    if (frame_time <= curr_ticks) {
+                        frame_to_display = frame;
+                        frame_queue.pop();
+                        frame_trash.push(frame);
+                    } else
+                        break;
+                }
+            }
+            if (frame_to_display)
+            {
+                video_frame.store(frame_to_display, std::memory_order_release);
+                SDL_Event event;
+                SDL_zero(event);
+                event.type = USEREVENT_NEXT_FRAME;
+                SDL_PushEvent(&event);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     double time_next_frame(double interval = 0.2)
     {
-        if (video.is_video() && !frame_queue.empty()) {
-            if (video_frame)
-                frame_trash.push(video_frame); // Move the current frame to the trash queue
-            video_frame = frame_queue.front();
-            frame_queue.pop(); // Remove the frame from the queue
-            if (need_play_time_update || video_frame->pts == first_video_pts)
-                set_play_time(video_frame->pts * video_time_base);
-            SDL_Event event;
-            SDL_zero(event);
-            event.type = USEREVENT_NEXT_FRAME;
-            SDL_PushEvent(&event);
-        }
-        read_next_frame(); // Preload the next frame
+        auto curr_ticks = get_ticks();
+        check_next_frame(curr_ticks);
+        auto play_time = curr_ticks - tick_diff;
         if (video.is_video()) {
+            while (frame_queue.size() < 1) {
+                if (!read_next_frame(play_time))
+                    break;
+            }
             if (frame_queue.empty()) {
                 return 0; // Stop the timer if no more frames are available
             }
-            auto curr_ticks = get_ticks();
-            while (true) {
-                auto frame = frame_queue.front();
-                if (frame->pts != AV_NOPTS_VALUE) {
-                    if (frame->pts == first_video_pts) {
-                        break;
-                    }
-                    auto frame_time = frame->pts * video_time_base + tick_diff; // Convert to milliseconds
-                    if (frame_time > curr_ticks)
-                    {
-                        interval = frame_time - curr_ticks;
-                        if (interval == 0)
-                            interval = 0.001;
-                        break;
-                    } else {
-                        if (video_frame)
-                            frame_trash.push(video_frame);
-                        video_frame = frame_queue.front();
-                        frame_queue.pop();
-                    }
-                } else {
-                    frame_trash.push(frame);
-                    frame_queue.pop();
-                }
-                read_next_frame();
-                if (frame_queue.empty()) {
-                    interval = 0; // Stop the timer if no more frames are available
-                    break;
-                }
-            }
+            auto frame = frame_queue.front();
+            auto frame_time = frame->pts * video_time_base + tick_diff; // Convert to milliseconds
+            interval = frame_time - curr_ticks;
+            if (interval <= 0)
+                interval = 0.001;
         } else {
             while (!audio_stream || SDL_GetAudioStreamQueued(audio_stream.get()) < 44100 * 2) {
-                if (!read_next_frame()) {
+                if (!read_next_frame(play_time)) {
                     break;
                 }
             }
@@ -311,10 +322,11 @@ struct AppState {
             std::lock_guard<std::mutex> lock(fetch_mutex);
             if (video.seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0)
             {
-                trash_frame_buffers();
+                recycle_frame_buffers();
                 need_play_time_update = true;
-                read_next_frame();
+                read_next_frame(0);
                 fetch_status = 1;
+                fetch_cv.notify_one();
                 return true;
             }
         } else if (video.seek(ts) >= 0)
@@ -376,7 +388,7 @@ struct AppState {
     }
 
     static double get_ticks() {
-        return static_cast<double>(SDL_GetTicks()) / 1000.0;
+        return static_cast<double>(SDL_GetPerformanceCounter()) / SDL_GetPerformanceFrequency();
     }
 
     void set_play_time(double play_time)
@@ -436,5 +448,12 @@ struct AppState {
 
         SDL_SetWindowSize(window.get(), target_w, target_h);
         SDL_SetWindowPosition(window.get(), new_x, new_y);
+    }
+
+    void pause() {
+        pause_time = get_play_time();
+        is_paused = true;
+        std::lock_guard<std::mutex> lock(fetch_mutex);
+        
     }
 };
