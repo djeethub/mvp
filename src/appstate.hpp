@@ -290,6 +290,8 @@ struct AppState {
 
     double time_next_frame(double interval = 0.2)
     {
+        if (is_paused)
+            return 77777;
         auto curr_ticks = get_ticks();
         check_next_frame(curr_ticks);
         auto play_time = curr_ticks - tick_diff;
@@ -453,9 +455,20 @@ struct AppState {
     }
 
     void pause() {
-        pause_time = get_play_time();
-        is_paused = true;
-        std::lock_guard<std::mutex> lock(fetch_mutex);
-        
+        if (is_paused) {
+            std::lock_guard<std::mutex> lock(fetch_mutex);
+            is_paused = false;
+            fetch_status = 2;
+            tick_diff += get_ticks() - pause_time;
+            SDL_ResumeAudioStreamDevice(audio_stream.get());
+            fetch_cv.notify_one();
+        }
+        else
+        {
+            std::lock_guard<std::mutex> lock(fetch_mutex);
+            SDL_PauseAudioStreamDevice(audio_stream.get());
+            pause_time = get_ticks();
+            is_paused = true;
+        }
     }
 };

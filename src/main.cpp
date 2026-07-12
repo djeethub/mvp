@@ -234,7 +234,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                 break;
 
             case SDLK_SPACE:
-//                state->pause();
+                state->pause();
+                gui.show_noti(state->is_paused ? "Paused" : "Resumed");
                 break;
             }
     }
