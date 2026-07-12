@@ -214,20 +214,22 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                 }
                 break;
             case SDLK_RIGHT:
-                state->seek_relative(5);
+                state->seek_relative(event->key.mod & SDL_KMOD_ALT ? 15 : 5);
                 break;
             case SDLK_LEFT:
-                state->seek_relative(-5);
+                state->seek_relative(event->key.mod & SDL_KMOD_ALT ? -15 : -5);
                 break;
 
             case SDLK_PAGEDOWN:
             case SDLK_PAGEUP:
             {
                 auto id = state->get_relative_chapter(event->key.key == SDLK_PAGEDOWN ? 1 : -1);
-                if (!state->seek_to_chapter(id))
-                    state->seek_relative(15);
-                else
-                    gui.show_noti(state->chapter_list[id].title);
+                if (id >= 0) {
+                    if (!state->seek_to_chapter(id))
+                        state->seek_relative(event->key.key == SDLK_PAGEDOWN ? 30 : -30);
+                    else
+                        gui.show_noti(state->chapter_list[id].title);
+                }
             }
                 break;
 

@@ -213,7 +213,7 @@ struct AppState {
         while (!done) {
             auto read_result = video.feed_frame([&](AVFrame *frame) -> void {
                 if (audio_stream) {
-                    if (frame->pts + audio_time_base < play_time)
+                    if (frame->pts * audio_time_base < play_time)
                         return;
                     video.convert_audio_frame(frame, &audio_buf);
                     // Feed the raw sound bytes to SDL3's background mixer
@@ -225,7 +225,7 @@ struct AppState {
                     done = true;
                 }
             },[&](AVFrame *frame) -> void {
-                if (frame->pts + audio_time_base < play_time) 
+                if (frame->pts * video_time_base < play_time)
                     return;
                 AVFrame *new_frame;
                 if (!frame_trash.empty()) {
@@ -323,8 +323,8 @@ struct AppState {
             if (video.seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0)
             {
                 recycle_frame_buffers();
-                need_play_time_update = true;
-                read_next_frame(0);
+                read_next_frame(ts);
+                set_play_time(ts);
                 fetch_status = 1;
                 fetch_cv.notify_one();
                 return true;
@@ -337,8 +337,8 @@ struct AppState {
     }
 
     bool seek_relative(double t) {
-        auto target_time = get_play_time();
         auto duration = video.get_duration();
+        auto target_time = get_play_time();
         target_time += t;
         if (target_time < 0.0)
             target_time = 0.0;
@@ -356,10 +356,12 @@ struct AppState {
         if (chapter_list.size() <= 1)
             return -1;
 
+        if (n < 0)
+            n++;
         auto play_time = get_play_time();
         for (int i = 0; i < chapter_list.size(); i++) {
             auto chapter = chapter_list[i];
-            if (play_time >= chapter.start_time && play_time <= chapter.end_time) {
+            if (play_time <= chapter.end_time + 1) {
                 auto id = i + n;
                 if (id >= 0 && id < chapter_list.size()) {
                     return id;
