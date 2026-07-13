@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <string>
+#include <queue>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -34,6 +35,42 @@ struct AudioBuffer {
             av_freep(&buf);
             av_samples_alloc(&buf, nullptr, 2, n, AV_SAMPLE_FMT_S16, 0);
             size = n;
+        }
+    }
+};
+
+struct PacketQueue {
+    std::queue<AVPacket *> queue;
+
+    ~PacketQueue() {
+        clear();
+    }
+
+    void clear() {
+        while (!queue.empty())
+        {
+            av_packet_free(&queue.front());
+            queue.pop();
+        }
+    }
+
+    AVPacket *get(bool alloc = true) {
+        AVPacket *packet;
+        if (queue.empty())
+            if (alloc)
+                packet = av_packet_alloc();
+            else
+                return nullptr;
+        else {
+            packet = queue.front();
+            queue.pop();
+        }
+        return packet;
+    }
+
+    void push(AVPacket *packet) {
+        if (packet) {
+            queue.push(packet);
         }
     }
 };
@@ -145,11 +182,10 @@ public:
         return sws_ctx != nullptr;
     }
 
-    template <typename AudioFeedFunc, typename VideoFeedFunc>
-    int feed_frame(AudioFeedFunc audio_feed, VideoFeedFunc video_feed)
+    template <typename AudioFeedFunc>
+    int feed_frame(AudioFeedFunc audio_feed)
     {
-        if (!packet)
-            packet = av_packet_alloc();
+        auto packet = packet_trash.get();
         if (!frame)
             frame = av_frame_alloc();
 
@@ -172,19 +208,39 @@ public:
         }
         else if (packet->stream_index == video_stream_index)
         {
+            video_packet_queue.push(packet);
+//            printf("video_packet_queue %i\n", video_packet_queue.queue.size());
+            packet = nullptr;
+        }
+        if (packet) {
+            av_packet_unref(packet);
+            packet_trash.push(packet);
+        }
+
+        return read_result;
+    }
+
+    template <typename VideoFeedFunc>
+    bool feed_video_frame(VideoFeedFunc video_feed) {
+        auto fed = false;
+        AVPacket *packet = video_packet_queue.get(false);
+        if (packet) {
             if (avcodec_send_packet(video_codec_ctx, packet) >= 0)
             {
                 while (avcodec_receive_frame(video_codec_ctx, frame) >= 0)
                 {
-                    if (frame->pts != AV_NOPTS_VALUE)
+                    if (frame->pts != AV_NOPTS_VALUE) {
                         video_feed(frame);
+                        fed = true;
+                    }
                     av_frame_unref(frame);
                 }
             }
+            av_packet_unref(packet);
+            packet_trash.push(packet);
         }
-        av_packet_unref(packet); // Recycle memory node cleanly
 
-        return read_result;
+        return fed;
     }
 
     void convert_audio_frame(AVFrame *frame, AudioBuffer *audio_buf)
@@ -238,10 +294,21 @@ public:
         avcodec_free_context(&audio_codec_ctx);
         avcodec_free_context(&video_codec_ctx);
         avformat_close_input(&format_ctx);
-        av_packet_free(&packet);
         av_frame_free(&frame);
         audio_stream_index = -1;
         video_stream_index = -1;
+        recycle_video_packet();
+    }
+
+    void recycle_video_packet() {
+        while (true) {
+            auto packet = video_packet_queue.get(false);
+            if (packet) {
+                av_packet_unref(packet);
+                packet_trash.push(packet);
+            } else
+                break;
+        }
     }
 
     void get_video_dimensions(int& width, int& height) const {
@@ -278,8 +345,9 @@ public:
                 format_ctx,
                 -1,
                 INT64_MIN, ts, INT64_MAX,
-                0);
+                AVSEEK_FLAG_BACKWARD);
         if (seek_result >= 0) {
+            recycle_video_packet();
             if (audio_codec_ctx)
                 avcodec_flush_buffers(audio_codec_ctx);
             if (video_codec_ctx)
@@ -325,6 +393,10 @@ public:
         return chapter_list;
     }
 
+    double get_start_time() {
+        return static_cast<double>(format_ctx->start_time) * AV_TIME_BASE;
+    }
+
 private:
     AVFormatContext* format_ctx = nullptr;
     AVCodecContext* audio_codec_ctx = nullptr;
@@ -335,7 +407,8 @@ private:
     SwsContext* sws_ctx = nullptr;
     int video_stream_index = -1;
 
-    AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
+    PacketQueue video_packet_queue;
+    PacketQueue packet_trash;
 };
 } // namespace ff
