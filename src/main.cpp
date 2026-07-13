@@ -81,14 +81,14 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
 
     Uint32 window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIDDEN;
     state->window.reset(SDL_CreateWindow("miv", 800, 600, window_flags));
-    if (!state->window) { delete state; return SDL_APP_FAILURE; }
+    if (!state->window) { return SDL_APP_FAILURE; }
 
     state->renderer.reset(SDL_CreateRenderer(state->window.get(), nullptr));
-    if (!state->renderer) { delete state; return SDL_APP_FAILURE; }
+    if (!state->renderer) { return SDL_APP_FAILURE; }
 
     SDL_SetWindowHitTest(state->window.get(), WindowHitTest, nullptr);
 
-    if (!state->load_image_at_index()) { delete state; return SDL_APP_FAILURE; }
+    if (!state->load_image_at_index()) { return SDL_APP_FAILURE; }
     SDL_ShowWindow(state->window.get());
 
     gui.init(state);

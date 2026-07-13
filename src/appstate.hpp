@@ -58,7 +58,7 @@ struct AppState {
     float video_scale = 1.0;
     float video_pan_x = 0.0;
     float video_pan_y = 0.0;
-    bool is_loop = false;
+    bool is_loop = true;
     bool is_looping = false;
     std::mutex fetch_mutex;
     std::condition_variable fetch_cv;
