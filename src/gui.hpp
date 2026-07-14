@@ -142,15 +142,9 @@ class AppGui {
             auto size = ImVec2(io.DisplaySize.x * 0.9, io.DisplaySize.y * 0.1);
             ImGui::SetNextWindowSize(size);
             ImGui::Begin("Slider", nullptr,
-                        ImGuiWindowFlags_NoTitleBar |
                         ImGuiWindowFlags_NoDecoration |
-                        ImGuiWindowFlags_NoResize |
-                        ImGuiWindowFlags_NoMove |
                         ImGuiWindowFlags_NoSavedSettings |
-                        ImGuiWindowFlags_NoScrollbar |
                         ImGuiWindowFlags_NoBackground |
-                        ImGuiWindowFlags_NoBringToFrontOnFocus |
-                        ImGuiWindowFlags_AlwaysAutoResize |
                         ImGuiWindowFlags_NoFocusOnAppearing |
                         ImGuiWindowFlags_NoNav |
                         ImGuiWindowFlags_NoMove);

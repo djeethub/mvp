@@ -220,10 +220,10 @@ struct AppState {
                     if (!is_looping && frame->pts * audio_time_base < play_time)
                         return;
                     video.convert_audio_frame(frame, &audio_buf);
-                    // Feed the raw sound bytes to SDL3's background mixer
 //                    if (frame->pts < last_audio_pts)
 //                        set_play_time(frame->pts * audio_time_base);
                     last_audio_pts = frame->pts;
+                    // Feed the raw sound bytes to SDL3's background mixer
                     if (!SDL_PutAudioStreamData(audio_stream.get(), audio_buf.buf, audio_buf.data_size)) {
                         SDL_Log("Audio Stream Error: %s", SDL_GetError());
                     }
