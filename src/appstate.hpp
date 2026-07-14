@@ -377,6 +377,10 @@ struct AppState {
         return seek(target_time, true);
     }
 
+    bool seek_ratio(double t) {
+        return seek(t * video.get_duration(), true);
+    }
+
     bool seek_to_chapter(int id) {
         auto chapter = chapter_list[id];
         return seek(chapter.start_time, true);

@@ -68,8 +68,10 @@ struct PacketQueue {
         return packet;
     }
 
-    void push(AVPacket *packet) {
+    void push(AVPacket *packet, bool unref = true) {
         if (packet) {
+            if (unref)
+                av_packet_unref(packet);
             queue.push(packet);
         }
     }
@@ -102,6 +104,7 @@ public:
             close();
             return false;
         }
+        duration = format_ctx->duration / (double)AV_TIME_BASE;
         return true;
     }
 
@@ -208,14 +211,12 @@ public:
         }
         else if (packet->stream_index == video_stream_index)
         {
-            video_packet_queue.push(packet);
+            video_packet_queue.push(packet, false);
 //            printf("video_packet_queue %i\n", video_packet_queue.queue.size());
             packet = nullptr;
         }
-        if (packet) {
-            av_packet_unref(packet);
+        if (packet)
             packet_trash.push(packet);
-        }
 
         return read_result;
     }
@@ -236,7 +237,6 @@ public:
                     av_frame_unref(frame);
                 }
             }
-            av_packet_unref(packet);
             packet_trash.push(packet);
         }
 
@@ -304,7 +304,6 @@ public:
         while (true) {
             auto packet = video_packet_queue.get(false);
             if (packet) {
-                av_packet_unref(packet);
                 packet_trash.push(packet);
             } else
                 break;
@@ -357,7 +356,7 @@ public:
     }
 
     double get_duration() {
-        return format_ctx->duration / (double)AV_TIME_BASE;
+        return duration;
     }
 
     std::vector<ChapterData> ReadChapters() {
@@ -410,5 +409,6 @@ private:
     AVFrame* frame = nullptr;
     PacketQueue video_packet_queue;
     PacketQueue packet_trash;
+    double duration;
 };
 } // namespace ff

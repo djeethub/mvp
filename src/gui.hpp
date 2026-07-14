@@ -138,28 +138,32 @@ class AppGui {
                 ImGui::PopFont();
             }
 
-            if (slider_expires_at > curr_ticks) {
-                ImGui::SetNextWindowPos(ImVec2(20, 0), 0, ImVec2(0.5, 0.9));
-                auto size = ImVec2(io.DisplaySize.x * 0.8, io.DisplaySize.y * 0.05);
-                ImGui::SetNextWindowSize(size);
-                ImGui::Begin("Slider", nullptr,
-                            ImGuiWindowFlags_NoTitleBar |
-                            ImGuiWindowFlags_NoDecoration |
-                            ImGuiWindowFlags_NoResize |
-                            ImGuiWindowFlags_NoMove |
-                            ImGuiWindowFlags_NoSavedSettings |
-                            ImGuiWindowFlags_NoScrollbar |
-                            ImGuiWindowFlags_NoBackground |
-                            ImGuiWindowFlags_NoBringToFrontOnFocus |
-                            ImGuiWindowFlags_AlwaysAutoResize |
-                            ImGuiWindowFlags_NoFocusOnAppearing |
-                            ImGuiWindowFlags_NoNav |
-                            ImGuiWindowFlags_NoMove);
-                float v = 0.3;
-                ImGui::PushItemWidth(size.x);
-                ImGui::SliderFloat("##threshold", &v, 0.0f, 1.0f, "Threshold: %.3f");
-                ImGui::End();
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5, io.DisplaySize.y * 0.9), 0, ImVec2(0.5, 0.5));
+            auto size = ImVec2(io.DisplaySize.x * 0.9, io.DisplaySize.y * 0.1);
+            ImGui::SetNextWindowSize(size);
+            ImGui::Begin("Slider", nullptr,
+                        ImGuiWindowFlags_NoTitleBar |
+                        ImGuiWindowFlags_NoDecoration |
+                        ImGuiWindowFlags_NoResize |
+                        ImGuiWindowFlags_NoMove |
+                        ImGuiWindowFlags_NoSavedSettings |
+                        ImGuiWindowFlags_NoScrollbar |
+                        ImGuiWindowFlags_NoBackground |
+                        ImGuiWindowFlags_NoBringToFrontOnFocus |
+                        ImGuiWindowFlags_AlwaysAutoResize |
+                        ImGuiWindowFlags_NoFocusOnAppearing |
+                        ImGuiWindowFlags_NoNav |
+                        ImGuiWindowFlags_NoMove);
+            if (ImGui::IsWindowHovered()) {
+                auto play_time = state->get_play_time();
+                auto duration = state->video.get_duration();
+                float v = play_time / duration;
+                ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::SliderFloat("##Seek", &v, 0.0f, 1.0f, std::format("{:.0f}/{:.0f}", play_time, duration).c_str())) {
+                    state->seek_ratio(v);
+                }
             }
+            ImGui::End();
 
             if (state->trigger_context_menu)
             {
