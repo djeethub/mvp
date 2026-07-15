@@ -281,9 +281,8 @@ public:
     template <typename VideoFeedFunc>
     bool feed_video_frame(VideoFeedFunc video_feed) {
         auto fed = false;
-        while (!fed) {
+        while (!fed && !video_packet_queue.empty()) {
             AVPacket *packet = video_packet_queue.get();
-            if (!packet) break;
             if (avcodec_send_packet(video_codec_ctx, packet) >= 0)
             {
                 while (avcodec_receive_frame(video_codec_ctx, frame) >= 0)
