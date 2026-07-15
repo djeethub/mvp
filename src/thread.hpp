@@ -47,7 +47,13 @@ public:
                     frame = nullptr;
                 }
                 if (converted_frame) {
-                    video->video_converted_queue.push(converted_frame);
+                    if (pts == pts_recycle)
+                        video->video_converted_queue.recycle(converted_frame, false);
+                    else if (pts == pts_clear)
+                        av_frame_free(&converted_frame);
+                    else
+                        video->video_converted_queue.push(converted_frame);
+                    pts = pts_undefined;
                     converted_frame = nullptr;
                 }
 
@@ -60,8 +66,8 @@ public:
                 }
 
                 frame = video->video_frame_queue.get();
-                if (frame)
-                    converted_frame = video->video_converted_queue.alloc([this]{ return video->alloc_converted_frame();});
+                pts = frame->pts;
+                converted_frame = video->video_converted_queue.alloc([this]{ return video->alloc_converted_frame();});
             }
 
             // Do the work outside the lock (important for performance)
@@ -73,6 +79,20 @@ public:
         }
     }
 
+    void clear() {
+        std::lock_guard<std::mutex> lock(mtx_);
+        video->video_frame_queue.clear();
+        video->video_converted_queue.clear();
+        pts = pts_clear;
+    }
+
+    void recycle() {
+        std::lock_guard<std::mutex> lock(mtx_);
+        video->video_frame_queue.recycle();
+        video->video_converted_queue.recycle(false);
+        pts = pts_recycle;
+    }
+
     auto count_video_frame() {
         std::lock_guard<std::mutex> lock(mtx_);
         return video->video_frame_queue.size();
@@ -80,7 +100,7 @@ public:
 
     bool empty() {
         std::lock_guard<std::mutex> lock(mtx_);
-        return video->video_frame_queue.empty() && video->video_converted_queue.empty();
+        return pts <= pts_undefined && video->video_frame_queue.empty() && video->video_converted_queue.empty();
     }
 
     double next_play_time(double play_time) {
@@ -88,6 +108,8 @@ public:
         if (!video->video_converted_queue.empty()) {
             return video->video_converted_queue.front()->pts * video->video_time_base;
         }
+        if (pts > pts_undefined)
+            return pts * video->video_time_base;
         if (!video->video_frame_queue.empty()) {
             return video->video_frame_queue.front()->pts * video->video_time_base;
         }
@@ -95,4 +117,11 @@ public:
     }
 
     ff::VideoFile *video;
+
+private:
+    int64_t pts = pts_undefined;
+    const int64_t pts_undefined = SDL_MIN_SINT64 + 99;
+    const int64_t pts_recycle = SDL_MIN_SINT64 + 1;
+    const int64_t pts_clear = SDL_MIN_SINT64;
+    AVBufferPool *my_pool = nullptr;
 };

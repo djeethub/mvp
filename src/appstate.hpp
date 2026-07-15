@@ -71,7 +71,12 @@ struct AppState {
     VideoConverter video_converter;
 #endif
 
-    AppState() = default;
+    AppState() {
+#ifdef _VIDEO_CONVERTER_THREAD_
+        video_converter.video = &video;
+#endif
+    }
+
     ~AppState()
     {
         reset_runtime_state();
@@ -88,8 +93,7 @@ struct AppState {
         video_frame = nullptr;
         {
 #ifdef _VIDEO_CONVERTER_THREAD_
-            std::lock_guard<std::mutex> lock(video_converter.mtx_);
-            video.video_frame_queue.clear();
+            video_converter.clear();
 #endif
             video.video_converted_queue.clear();
         }
@@ -100,8 +104,7 @@ struct AppState {
         video_frame = nullptr;
         {
 #ifdef _VIDEO_CONVERTER_THREAD_
-            std::lock_guard<std::mutex> lock(video_converter.mtx_);
-            video.video_frame_queue.recycle();
+            video_converter.recycle();
 #endif
             video.video_converted_queue.recycle(false);
         }
@@ -128,7 +131,7 @@ struct AppState {
             std::lock_guard<std::mutex> lock(fetch_mutex);
             fetch_status = -1;
         }
-        fetch_cv.notify_all();
+        fetch_cv.notify_one();
         if (fetch_thread.joinable())
             fetch_thread.join();
 #ifdef _VIDEO_CONVERTER_THREAD_
@@ -141,7 +144,7 @@ struct AppState {
     bool load_image_at_index() {
         if (image_files.empty() || !renderer) return false;
 
-        std::lock_guard<std::mutex> lock(fetch_mutex);
+        std::unique_lock<std::mutex> lock(fetch_mutex);
         reset_runtime_state();
 
         const auto &filename = image_files[current_index];
@@ -210,16 +213,16 @@ struct AppState {
         SDL_SetWindowTitle(window.get(), filename.c_str());
 
         fetch_status = 1;
-        fetch_cv.notify_all();
         if (!fetch_thread.joinable()) {
             fetch_thread = std::thread(fetch_thread_worker, this);
             pthread_setname_np(fetch_thread.native_handle(), "fetch");
         }
 #ifdef _VIDEO_CONVERTER_THREAD_
-        video_converter.video = &video;
         video_converter.start();
 #endif
         read_next_frame(0);
+        lock.unlock();
+        fetch_cv.notify_one();
         return true;
     }
 
@@ -252,8 +255,10 @@ struct AppState {
             if (video_frame_count < 2) {
                 video.feed_video_frame([&](AVFrame *frame) -> void {
                     auto frame_time = frame->pts * video.video_time_base;
-                    if (!is_looping && frame_time < play_time)
+                    if (!is_looping && frame_time < play_time) {
+                        printf("skip: %i\n", frame->pts);
                         return;
+                    }
 #ifdef _VIDEO_CONVERTER_THREAD_
                     {
                         std::lock_guard<std::mutex> lock(video_converter.mtx_);
@@ -285,15 +290,17 @@ struct AppState {
             AVFrame *frame_to_display = nullptr;
             {
 #ifdef _VIDEO_CONVERTER_THREAD_
-                std::unique_lock<std::mutex> lock(video_converter.mtx_);
+                std::lock_guard<std::mutex> lock(video_converter.mtx_);
 #endif
                 while (!video.video_converted_queue.empty()) {
                     auto frame = video.video_converted_queue.front();
                     if (frame->pts < last_video_pts) {
                         last_video_pts = frame->pts;
+                        if (frame_to_display)
+                            video.video_converted_queue.recycle(frame_to_display, false);
                         frame_to_display = frame;
+                        printf("pts1: %i\n", frame_to_display->pts);
                         video.video_converted_queue.pop();
-                        video.video_converted_queue.recycle(frame, false);
                         break;
                     }
                     else
@@ -301,9 +308,11 @@ struct AppState {
                         auto frame_time = frame->pts * video.video_time_base + tick_diff;
                         if (frame_time <= curr_ticks) {
                             last_video_pts = frame->pts;
+                            if (frame_to_display)
+                                video.video_converted_queue.recycle(frame_to_display, false);
                             frame_to_display = frame;
+                            printf("pts2: %i\n", frame_to_display->pts);
                             video.video_converted_queue.pop();
-                            video.video_converted_queue.recycle(frame, false);
                         } else
                             break;
                     }
@@ -368,11 +377,12 @@ struct AppState {
             }
             curr_ticks -= tick_diff;
 #ifdef _VIDEO_CONVERTER_THREAD_
-            double frame_time = video_converter.next_play_time(curr_ticks);
+            auto frame_time = video_converter.next_play_time(curr_ticks);
 #else
             auto frame_time = video.video_converted_queue.front()->pts * video.video_time_base;
 #endif
             interval = frame_time - curr_ticks;
+            printf("interval: %f\n", interval);
             if (interval <= 0)
                 interval = 0.001;
         } else {
