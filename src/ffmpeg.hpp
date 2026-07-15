@@ -39,43 +39,100 @@ struct AudioBuffer {
     }
 };
 
-struct PacketQueue {
-    std::queue<AVPacket *> queue;
+template <typename DataPtr, DataPtr (*AllocFunc)(), void (*FreeFunc)(DataPtr*), void (*UnrefFunc)(DataPtr)>
+struct AvQueue {
+    std::queue<DataPtr> queue;
+    std::queue<DataPtr> trash;
 
-    ~PacketQueue() {
+    ~AvQueue() {
         clear();
     }
 
     void clear() {
         while (!queue.empty())
         {
-            av_packet_free(&queue.front());
+            FreeFunc(&queue.front());
             queue.pop();
+        }
+        while (!trash.empty())
+        {
+            FreeFunc(&trash.front());
+            trash.pop();
         }
     }
 
-    AVPacket *get(bool alloc = true) {
-        AVPacket *packet;
-        if (queue.empty())
-            if (alloc)
-                packet = av_packet_alloc();
-            else
-                return nullptr;
+    DataPtr get() {
+        DataPtr data_ptr = queue.front();
+        queue.pop();
+        return data_ptr;
+    }
+
+    DataPtr front() {
+        return queue.front();
+    }
+
+    void pop() {
+        queue.pop();
+    }
+
+    DataPtr alloc() {
+        DataPtr data_ptr = nullptr;
+        if (trash.empty())
+            data_ptr = AllocFunc();
         else {
-            packet = queue.front();
-            queue.pop();
+            data_ptr = trash.front();
+            trash.pop();
         }
-        return packet;
+        return data_ptr;
     }
 
-    void push(AVPacket *packet, bool unref = true) {
-        if (packet) {
-            if (unref)
-                av_packet_unref(packet);
-            queue.push(packet);
+    template <typename CustomAllocFunc>
+    DataPtr alloc(CustomAllocFunc func) {
+        DataPtr data_ptr = nullptr;
+        if (trash.empty())
+            data_ptr = func();
+        else {
+            data_ptr = trash.front();
+            trash.pop();
         }
+        return data_ptr;
+    }
+
+    void push(DataPtr data_ptr) {
+        if (data_ptr) {
+            queue.push(data_ptr);
+        }
+    }
+
+    void recycle(DataPtr data_ptr, bool unref = true) {
+        if (data_ptr) {
+            if (unref)
+                UnrefFunc(data_ptr);
+            trash.push(data_ptr);
+        }
+    }
+
+    void recycle(bool unref = true) {
+        while (!queue.empty()) {
+            auto data_ptr = queue.front();
+            if (unref)
+                UnrefFunc(data_ptr);
+            trash.push(data_ptr);
+            queue.pop();
+        }
+    }
+
+    auto size() {
+        return queue.size();
+    }
+
+    auto empty() {
+        return queue.empty();
     }
 };
+
+typedef AvQueue<AVPacket *, av_packet_alloc, av_packet_free, av_packet_unref> PacketQueue;
+typedef AvQueue<AVFrame *, av_frame_alloc, av_frame_free, av_frame_unref> FrameQueue;
 
 class VideoFile {
 public:
@@ -188,7 +245,7 @@ public:
     template <typename AudioFeedFunc>
     int feed_frame(AudioFeedFunc audio_feed)
     {
-        auto packet = packet_trash.get();
+        auto packet = video_packet_queue.alloc();
         if (!frame)
             frame = av_frame_alloc();
 
@@ -211,12 +268,12 @@ public:
         }
         else if (packet->stream_index == video_stream_index)
         {
-            video_packet_queue.push(packet, false);
+            video_packet_queue.push(packet);
 //            printf("video_packet_queue %i\n", video_packet_queue.queue.size());
             packet = nullptr;
         }
         if (packet)
-            packet_trash.push(packet);
+            video_packet_queue.recycle(packet);
 
         return read_result;
     }
@@ -225,7 +282,7 @@ public:
     bool feed_video_frame(VideoFeedFunc video_feed) {
         auto fed = false;
         while (!fed) {
-            AVPacket *packet = video_packet_queue.get(false);
+            AVPacket *packet = video_packet_queue.get();
             if (!packet) break;
             if (avcodec_send_packet(video_codec_ctx, packet) >= 0)
             {
@@ -238,7 +295,7 @@ public:
                     av_frame_unref(frame);
                 }
             }
-            packet_trash.push(packet);
+            video_packet_queue.recycle(packet);
         }
 
         return fed;
@@ -298,17 +355,7 @@ public:
         av_frame_free(&frame);
         audio_stream_index = -1;
         video_stream_index = -1;
-        recycle_video_packet();
-    }
-
-    void recycle_video_packet() {
-        while (true) {
-            auto packet = video_packet_queue.get(false);
-            if (packet) {
-                packet_trash.push(packet);
-            } else
-                break;
-        }
+        video_packet_queue.recycle();
     }
 
     void get_video_dimensions(int& width, int& height) const {
@@ -347,7 +394,7 @@ public:
                 INT64_MIN, ts, INT64_MAX,
                 AVSEEK_FLAG_BACKWARD);
         if (seek_result >= 0) {
-            recycle_video_packet();
+            video_packet_queue.recycle();
             if (audio_codec_ctx)
                 avcodec_flush_buffers(audio_codec_ctx);
             if (video_codec_ctx)
@@ -409,7 +456,10 @@ private:
 
     AVFrame* frame = nullptr;
     PacketQueue video_packet_queue;
-    PacketQueue packet_trash;
     double duration;
+
+public:
+    FrameQueue video_frame_queue;
+    FrameQueue video_converted_queue;
 };
 } // namespace ff

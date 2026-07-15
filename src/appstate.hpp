@@ -16,6 +16,7 @@
 
 #include "utils.hpp"
 #include "ffmpeg.hpp"
+#include "thread.hpp"
 
 // Define a unique event ID for our frame ticker
 #define USEREVENT_NEXT_FRAME (SDL_EVENT_USER + 1)
@@ -45,8 +46,6 @@ struct AppState {
 
     ff::VideoFile video;
     std::atomic<AVFrame *> video_frame;
-    std::queue<AVFrame *> frame_queue;
-    std::queue<AVFrame *> frame_trash;
     ff::AudioBuffer audio_buf;
     double tick_diff = 0;
     int64_t last_video_pts = SDL_MAX_SINT64;
@@ -82,24 +81,13 @@ struct AppState {
 
     void clear_frame_buffers() {
         video_frame = nullptr;
-        while (!frame_queue.empty()) {
-            av_frame_free(&frame_queue.front());
-            frame_queue.pop();
-        }
-        while (!frame_trash.empty()) {
-            av_frame_free(&frame_trash.front());
-            frame_trash.pop();
-        }
+        video.video_frame_queue.clear();
     }
 
     void recycle_frame_buffers()
     {
         video_frame = nullptr;
-        while (!frame_queue.empty())
-        {
-            frame_trash.push(frame_queue.front());
-            frame_queue.pop();
-        }
+        video.video_frame_queue.recycle(false);
         if (audio_stream)
             SDL_ClearAudioStream(audio_stream.get());
     }
@@ -205,15 +193,17 @@ struct AppState {
 
         fetch_status = 1;
         fetch_cv.notify_all();
-        if (!fetch_thread.joinable())
+        if (!fetch_thread.joinable()) {
             fetch_thread = std::thread(fetch_thread_worker, this);
+            pthread_setname_np(fetch_thread.native_handle(), "fetch");
+        }
         read_next_frame(0);
         return true;
     }
 
     int read_next_frame(double play_time) {
         int read_result = 0;
-        while (frame_queue.size() < 1 || (audio_stream && SDL_GetAudioStreamQueued(audio_stream.get()) < 22222)) {
+        while (video.video_frame_queue.size() < 1 || (audio_stream && SDL_GetAudioStreamQueued(audio_stream.get()) < 22222)) {
             read_result = video.feed_frame([&](AVFrame *frame) -> void {
                 if (audio_stream) {
 //                    printf("pts: %f, play_time: %f, looping: %i\n", frame->pts * audio_time_base, play_time, is_looping);
@@ -230,19 +220,14 @@ struct AppState {
 //                    printf("SDL_GetAudioStreamQueued: %i\n", SDL_GetAudioStreamQueued(audio_stream.get()));
                 }
             });
-            if (frame_queue.size() < 1) {
+            if (video.video_frame_queue.size() < 1) {
                 video.feed_video_frame([&](AVFrame *frame) -> void {
                     if (!is_looping && frame->pts * video_time_base < play_time)
                         return;
-                    AVFrame *new_frame;
-                    if (!frame_trash.empty()) {
-                        new_frame = frame_trash.front();
-                        frame_trash.pop();
-                    } else
-                        new_frame = video.alloc_converted_frame();
+                    AVFrame *new_frame = video.video_frame_queue.alloc([this]{ return video.alloc_converted_frame();});
                     video.scale_video_frame(frame, new_frame);
                     new_frame->pts = frame->pts;
-                    frame_queue.push(new_frame);
+                    video.video_frame_queue.push(new_frame);
                 });
             }
             if (read_result < 0)
@@ -254,15 +239,15 @@ struct AppState {
     bool check_next_frame(double curr_ticks) {
         if (video.is_video()) {
             AVFrame *frame_to_display = nullptr;
-            while (!frame_queue.empty()) {
-                auto frame = frame_queue.front();
+            while (!video.video_frame_queue.empty()) {
+                auto frame = video.video_frame_queue.front();
                 if (frame->pts < last_video_pts) {
                     is_looping = false;
                     last_video_pts = frame->pts;
                     set_play_time(frame->pts * video_time_base);
                     frame_to_display = frame;
-                    frame_queue.pop();
-                    frame_trash.push(frame);
+                    video.video_frame_queue.pop();
+                    video.video_frame_queue.recycle(frame, false);
                     break;
                 }
                 else
@@ -271,8 +256,8 @@ struct AppState {
                     if (frame_time <= curr_ticks) {
                         last_video_pts = frame->pts;
                         frame_to_display = frame;
-                        frame_queue.pop();
-                        frame_trash.push(frame);
+                        video.video_frame_queue.pop();
+                        video.video_frame_queue.recycle(frame, false);
                     } else
                         break;
                 }
@@ -299,11 +284,11 @@ struct AppState {
         check_next_frame(curr_ticks);
         auto play_time = curr_ticks - tick_diff;
         if (video.is_video()) {
-            while (frame_queue.size() < 1) {
+            while (video.video_frame_queue.size() < 1) {
                 auto rlt = read_next_frame(play_time);
                 if (rlt < 0) {
                     if (rlt == AVERROR_EOF) {
-                        if (is_loop && frame_queue.empty()) {
+                        if (is_loop && video.video_frame_queue.empty()) {
                             if (seek(video.get_start_time(), false)) {
                                 is_looping = true;
                                 if (audio_stream) {
@@ -323,10 +308,10 @@ struct AppState {
                     break;
                 }
             }
-            if (frame_queue.empty()) {
+            if (video.video_frame_queue.empty()) {
                 return 0; // Stop the timer if no more frames are available
             }
-            auto frame = frame_queue.front();
+            auto frame = video.video_frame_queue.front();
             auto frame_time = frame->pts * video_time_base + tick_diff; // Convert to milliseconds
             interval = frame_time - curr_ticks;
             if (interval <= 0)
