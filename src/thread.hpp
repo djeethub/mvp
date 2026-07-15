@@ -8,26 +8,6 @@
 
 class Worker {
 public:
-    Worker() {
-        thread_ = std::thread(&Worker::run, this);
-    }
-
-    ~Worker() {
-        stop();
-    }
-
-    // Enqueue work from another thread
-    template <typename Func>
-    void wake(Func func = nullptr) {
-        {
-            std::lock_guard<std::mutex> lock(mtx_);
-            if (func)
-                func();
-        }
-        cv_.notify_one();           // Wake up the worker
-    }
-
-protected:
     void stop() {
         {
             std::lock_guard<std::mutex> lock(mtx_);
@@ -39,6 +19,11 @@ protected:
         }
     }
 
+    void start() {
+        if (!thread_.joinable())
+            thread_ = std::thread(&Worker::run, this);
+    }
+
     virtual void run() = 0;
 
     std::thread thread_;
@@ -47,17 +32,13 @@ protected:
     bool stop_ = false;
 };
 
-class VideoConverter : Worker {
+class VideoConverter : public Worker {
 public:
-    VideoConverter(ff::VideoFile *_video) : video(_video) {
-    }
-
-private:
     void run() {
-        while (true) {
-            AVFrame *frame = nullptr;
-            AVFrame *converted_frame = nullptr;
+        AVFrame *frame = nullptr;
+        AVFrame *converted_frame = nullptr;
 
+        while (true) {
             // Wait for work or stop signal
             {
                 std::unique_lock<std::mutex> lock(mtx_);
@@ -80,14 +61,37 @@ private:
 
                 frame = video->video_frame_queue.get();
                 if (frame)
-                    converted_frame = video->video_converted_queue.alloc();
+                    converted_frame = video->video_converted_queue.alloc([this]{ return video->alloc_converted_frame();});
             }
 
             // Do the work outside the lock (important for performance)
             if (frame && converted_frame) {
                 video->scale_video_frame(frame, converted_frame);
+                converted_frame->pts = frame->pts;
+                converted_frame->duration = frame->duration;
             }
         }
+    }
+
+    auto count_video_frame() {
+        std::lock_guard<std::mutex> lock(mtx_);
+        return video->video_frame_queue.size();
+    }
+
+    bool empty() {
+        std::lock_guard<std::mutex> lock(mtx_);
+        return video->video_frame_queue.empty() && video->video_converted_queue.empty();
+    }
+
+    double next_play_time(double play_time) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (!video->video_converted_queue.empty()) {
+            return video->video_converted_queue.front()->pts * video->video_time_base;
+        }
+        if (!video->video_frame_queue.empty()) {
+            return video->video_frame_queue.front()->pts * video->video_time_base;
+        }
+        return 0;
     }
 
     ff::VideoFile *video;

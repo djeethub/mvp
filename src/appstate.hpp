@@ -1,5 +1,7 @@
 #pragma once
 
+#define _VIDEO_CONVERTER_THREAD_
+
 #include <string>
 #include <vector>
 #include <memory>
@@ -16,7 +18,9 @@
 
 #include "utils.hpp"
 #include "ffmpeg.hpp"
+#ifdef _VIDEO_CONVERTER_THREAD_
 #include "thread.hpp"
+#endif
 
 // Define a unique event ID for our frame ticker
 #define USEREVENT_NEXT_FRAME (SDL_EVENT_USER + 1)
@@ -50,8 +54,6 @@ struct AppState {
     double tick_diff = 0;
     int64_t last_video_pts = SDL_MAX_SINT64;
     int64_t last_audio_pts = SDL_MAX_SINT64;
-    double video_time_base = 0.0;
-    double audio_time_base = 0.0;
     SDL_AudioDeviceID audio_device_id = 0;
     std::thread fetch_thread;
     float video_scale = 1.0;
@@ -65,6 +67,9 @@ struct AppState {
     std::vector<ff::ChapterData> chapter_list;
     double pause_time;
     bool is_paused = false;
+#ifdef _VIDEO_CONVERTER_THREAD_
+    VideoConverter video_converter;
+#endif
 
     AppState() = default;
     ~AppState()
@@ -81,13 +86,25 @@ struct AppState {
 
     void clear_frame_buffers() {
         video_frame = nullptr;
-        video.video_frame_queue.clear();
+        {
+#ifdef _VIDEO_CONVERTER_THREAD_
+            std::lock_guard<std::mutex> lock(video_converter.mtx_);
+            video.video_frame_queue.clear();
+#endif
+            video.video_converted_queue.clear();
+        }
     }
 
     void recycle_frame_buffers()
     {
         video_frame = nullptr;
-        video.video_frame_queue.recycle(false);
+        {
+#ifdef _VIDEO_CONVERTER_THREAD_
+            std::lock_guard<std::mutex> lock(video_converter.mtx_);
+            video.video_frame_queue.recycle();
+#endif
+            video.video_converted_queue.recycle(false);
+        }
         if (audio_stream)
             SDL_ClearAudioStream(audio_stream.get());
     }
@@ -114,6 +131,9 @@ struct AppState {
         fetch_cv.notify_all();
         if (fetch_thread.joinable())
             fetch_thread.join();
+#ifdef _VIDEO_CONVERTER_THREAD_
+        video_converter.stop();
+#endif
         SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
         return true;
     }
@@ -135,7 +155,6 @@ struct AppState {
             if (video.open_audio_decoder()) {
                 video.setup_swr_context();
 
-                audio_time_base = video.get_audio_time_base();
                 int count = 0;
                 auto *devices = SDL_GetAudioPlaybackDevices(&count);
                 if (count > 0) {
@@ -167,14 +186,13 @@ struct AppState {
             if (video.open_video_decoder()) {
                 video.setup_sws_context();
                 
-                video_time_base = video.get_video_time_base();
                 int w, h;
                 video.get_video_dimensions(w, h);
 
                 // Create an SDL3 texture that matches the video dimensions
                 SDL_Texture* tex = SDL_CreateTexture(
                     renderer.get(), 
-                    SDL_PIXELFORMAT_IYUV,   // Super fast native YUV streaming
+                    SDL_PIXELFORMAT_NV12,   // Super fast native YUV streaming
                     SDL_TEXTUREACCESS_STREAMING, 
                     w, 
                     h
@@ -197,17 +215,28 @@ struct AppState {
             fetch_thread = std::thread(fetch_thread_worker, this);
             pthread_setname_np(fetch_thread.native_handle(), "fetch");
         }
+#ifdef _VIDEO_CONVERTER_THREAD_
+        video_converter.video = &video;
+        video_converter.start();
+#endif
         read_next_frame(0);
         return true;
     }
 
     int read_next_frame(double play_time) {
         int read_result = 0;
-        while (video.video_frame_queue.size() < 1 || (audio_stream && SDL_GetAudioStreamQueued(audio_stream.get()) < 22222)) {
+        while (true) {
+#ifdef _VIDEO_CONVERTER_THREAD_
+            auto video_frame_count = video_converter.count_video_frame();
+#else
+            auto video_frame_count = video.video_converted_queue.size();
+#endif
+            if (video_frame_count >= 2 && (!audio_stream || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
+                break;
             read_result = video.feed_frame([&](AVFrame *frame) -> void {
                 if (audio_stream) {
 //                    printf("pts: %f, play_time: %f, looping: %i\n", frame->pts * audio_time_base, play_time, is_looping);
-                    if (!is_looping && frame->pts * audio_time_base < play_time)
+                    if (!is_looping && frame->pts * video.audio_time_base < play_time)
                         return;
                     video.convert_audio_frame(frame, &audio_buf);
 //                    if (frame->pts < last_audio_pts)
@@ -220,14 +249,29 @@ struct AppState {
 //                    printf("SDL_GetAudioStreamQueued: %i\n", SDL_GetAudioStreamQueued(audio_stream.get()));
                 }
             });
-            if (video.video_frame_queue.size() < 1) {
+            if (video_frame_count < 2) {
                 video.feed_video_frame([&](AVFrame *frame) -> void {
-                    if (!is_looping && frame->pts * video_time_base < play_time)
+                    auto frame_time = frame->pts * video.video_time_base;
+                    if (!is_looping && frame_time < play_time)
                         return;
-                    AVFrame *new_frame = video.video_frame_queue.alloc([this]{ return video.alloc_converted_frame();});
+#ifdef _VIDEO_CONVERTER_THREAD_
+                    {
+                        std::lock_guard<std::mutex> lock(video_converter.mtx_);
+                        auto new_frame = video.video_frame_queue.alloc();
+                        av_frame_ref(new_frame, frame);
+                        video.video_frame_queue.push(new_frame);
+                    }
+                    video_converter.cv_.notify_one();
+#else
+                    AVFrame *new_frame = video.video_converted_queue.alloc([this]{ return video.alloc_converted_frame();});
                     video.scale_video_frame(frame, new_frame);
                     new_frame->pts = frame->pts;
-                    video.video_frame_queue.push(new_frame);
+                    video.video_converted_queue.push(new_frame);
+#endif
+                    if (frame->pts < last_video_pts) {
+                        is_looping = false;
+                        set_play_time(frame_time);
+                    }
                 });
             }
             if (read_result < 0)
@@ -239,31 +283,37 @@ struct AppState {
     bool check_next_frame(double curr_ticks) {
         if (video.is_video()) {
             AVFrame *frame_to_display = nullptr;
-            while (!video.video_frame_queue.empty()) {
-                auto frame = video.video_frame_queue.front();
-                if (frame->pts < last_video_pts) {
-                    is_looping = false;
-                    last_video_pts = frame->pts;
-                    set_play_time(frame->pts * video_time_base);
-                    frame_to_display = frame;
-                    video.video_frame_queue.pop();
-                    video.video_frame_queue.recycle(frame, false);
-                    break;
-                }
-                else
-                {
-                    auto frame_time = frame->pts * video_time_base + tick_diff;
-                    if (frame_time <= curr_ticks) {
+            {
+#ifdef _VIDEO_CONVERTER_THREAD_
+                std::unique_lock<std::mutex> lock(video_converter.mtx_);
+#endif
+                while (!video.video_converted_queue.empty()) {
+                    auto frame = video.video_converted_queue.front();
+                    if (frame->pts < last_video_pts) {
                         last_video_pts = frame->pts;
                         frame_to_display = frame;
-                        video.video_frame_queue.pop();
-                        video.video_frame_queue.recycle(frame, false);
-                    } else
+                        video.video_converted_queue.pop();
+                        video.video_converted_queue.recycle(frame, false);
                         break;
+                    }
+                    else
+                    {
+                        auto frame_time = frame->pts * video.video_time_base + tick_diff;
+                        if (frame_time <= curr_ticks) {
+                            last_video_pts = frame->pts;
+                            frame_to_display = frame;
+                            video.video_converted_queue.pop();
+                            video.video_converted_queue.recycle(frame, false);
+                        } else
+                            break;
+                    }
                 }
             }
             if (frame_to_display)
             {
+#ifdef _VIDEO_CONVERTER_THREAD_
+                video_converter.cv_.notify_one();
+#endif
                 video_frame.store(frame_to_display, std::memory_order_release);
                 SDL_Event event;
                 SDL_zero(event);
@@ -284,35 +334,44 @@ struct AppState {
         check_next_frame(curr_ticks);
         auto play_time = curr_ticks - tick_diff;
         if (video.is_video()) {
-            while (video.video_frame_queue.size() < 1) {
-                auto rlt = read_next_frame(play_time);
-                if (rlt < 0) {
-                    if (rlt == AVERROR_EOF) {
-                        if (is_loop && video.video_frame_queue.empty()) {
-                            if (seek(video.get_start_time(), false)) {
-                                is_looping = true;
-                                if (audio_stream) {
-                                    auto bytes = SDL_GetAudioStreamQueued(audio_stream.get());
-                                    if (bytes > 0) {
-                                        return static_cast<double>(bytes) / (44100 * 2 * sizeof(int16_t));
-                                    }
+            auto rlt = read_next_frame(play_time);
+            if (rlt < 0) {
+                if (rlt == AVERROR_EOF) {
+#ifdef _VIDEO_CONVERTER_THREAD_
+                    if (is_loop && video_converter.empty()) {
+#else
+                    if (is_loop && video.video_converted_queue.empty()) {
+#endif
+                        if (seek(video.get_start_time(), false)) {
+                            is_looping = true;
+                            if (audio_stream) {
+                                auto bytes = SDL_GetAudioStreamQueued(audio_stream.get());
+                                if (bytes > 0) {
+                                    return static_cast<double>(bytes) / (44100 * 2 * sizeof(int16_t));
                                 }
-                                auto frame = video_frame.load(std::memory_order_relaxed);
-                                if (frame && frame->duration > 0)
-                                    return frame->duration * video_time_base;
-                                else
-                                    return 0.001;
                             }
+                            auto frame = video_frame.load(std::memory_order_relaxed);
+                            if (frame && frame->duration > 0)
+                                return frame->duration * video.video_time_base;
+                            else
+                                return 0.001;
                         }
                     }
-                    break;
                 }
             }
-            if (video.video_frame_queue.empty()) {
+#ifdef _VIDEO_CONVERTER_THREAD_
+            if (video_converter.empty()) {
+#else
+            if (video.video_converted_queue.empty()) {
+#endif
                 return 0; // Stop the timer if no more frames are available
             }
-            auto frame = video.video_frame_queue.front();
-            auto frame_time = frame->pts * video_time_base + tick_diff; // Convert to milliseconds
+            curr_ticks -= tick_diff;
+#ifdef _VIDEO_CONVERTER_THREAD_
+            double frame_time = video_converter.next_play_time(curr_ticks);
+#else
+            auto frame_time = video.video_converted_queue.front()->pts * video.video_time_base;
+#endif
             interval = frame_time - curr_ticks;
             if (interval <= 0)
                 interval = 0.001;
@@ -331,23 +390,27 @@ struct AppState {
     }
 
     bool seek(double ts, bool reset) {
+        auto rlt = false;
         if (reset)
         {
-            std::lock_guard<std::mutex> lock(fetch_mutex);
-            if (video.seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0)
             {
-                recycle_frame_buffers();
-                set_play_time(ts);
-                read_next_frame(ts);
-                fetch_status = 1;
-                fetch_cv.notify_one();
-                return true;
+                std::lock_guard<std::mutex> lock(fetch_mutex);
+                if (video.seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0)
+                {
+                    recycle_frame_buffers();
+                    set_play_time(ts);
+                    read_next_frame(ts);
+                    fetch_status = 1;
+                    rlt = true;
+                }
             }
+            if (rlt)
+                fetch_cv.notify_one();
         } else if (video.seek(ts) >= 0)
         {
-            return true;
+            rlt = true;
         }
-        return false;
+        return rlt;
     }
 
     bool seek_relative(double t) {
@@ -478,11 +541,13 @@ struct AppState {
 
     void pause() {
         if (is_paused) {
-            std::lock_guard<std::mutex> lock(fetch_mutex);
-            is_paused = false;
-            fetch_status = 2;
-            tick_diff += get_ticks() - pause_time;
-            SDL_ResumeAudioStreamDevice(audio_stream.get());
+            {
+                std::lock_guard<std::mutex> lock(fetch_mutex);
+                is_paused = false;
+                fetch_status = 2;
+                tick_diff += get_ticks() - pause_time;
+                SDL_ResumeAudioStreamDevice(audio_stream.get());
+            }
             fetch_cv.notify_one();
         }
         else

@@ -200,6 +200,7 @@ public:
         audio_codec_ctx = avcodec_alloc_context3(codec);
         avcodec_parameters_to_context(audio_codec_ctx, codec_params);
         avcodec_open2(audio_codec_ctx, codec, nullptr);
+        audio_time_base = get_audio_time_base();
         return true;
     }
 
@@ -210,6 +211,7 @@ public:
         video_codec_ctx = avcodec_alloc_context3(codec);
         avcodec_parameters_to_context(video_codec_ctx, codec_params);
         avcodec_open2(video_codec_ctx, codec, nullptr);
+        video_time_base = get_video_time_base();
         return true;
     }
 
@@ -237,7 +239,7 @@ public:
     {
         sws_ctx = sws_getContext(
             video_codec_ctx->width, video_codec_ctx->height, video_codec_ctx->pix_fmt, // True source format
-            video_codec_ctx->width, video_codec_ctx->height, AV_PIX_FMT_YUV420P,       // True target format
+            video_codec_ctx->width, video_codec_ctx->height, AV_PIX_FMT_NV12,       // True target format
             SWS_BILINEAR, nullptr, nullptr, nullptr);
         return sws_ctx != nullptr;
     }
@@ -339,7 +341,7 @@ public:
     AVFrame *alloc_converted_frame()
     {
         AVFrame *converted_frame = av_frame_alloc();
-        converted_frame->format = AV_PIX_FMT_YUV420P;
+        converted_frame->format = AV_PIX_FMT_NV12;
         converted_frame->width = video_codec_ctx->width;
         converted_frame->height = video_codec_ctx->height;
         av_frame_get_buffer(converted_frame, 0); // Allocate the internal pixel memory arrays
@@ -458,7 +460,11 @@ private:
     double duration;
 
 public:
+    double video_time_base = 0.0;
+    double audio_time_base = 0.0;
+#ifdef _VIDEO_CONVERTER_THREAD_
     FrameQueue video_frame_queue;
+#endif
     FrameQueue video_converted_queue;
 };
 } // namespace ff
