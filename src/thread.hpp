@@ -20,8 +20,10 @@ public:
     }
 
     void start() {
-        if (!thread_.joinable())
+        if (!thread_.joinable()) {
             thread_ = std::thread(&Worker::run, this);
+            pthread_setname_np(thread_.native_handle(), "video");
+        }
     }
 
     virtual void run() = 0;
@@ -114,6 +116,13 @@ public:
             return video->video_frame_queue.front()->pts * video->video_time_base;
         }
         return 0;
+    }
+
+    void return_converted_frame(AVFrame *frame) {
+        if (video->check_converted_frame(frame))
+            video->video_converted_queue.recycle(frame, false);
+        else
+            av_frame_free(&frame);
     }
 
     ff::VideoFile *video;

@@ -348,6 +348,11 @@ public:
         return converted_frame;
     }
 
+    bool check_converted_frame(AVFrame *frame)
+    {
+        return frame->format == AV_PIX_FMT_NV12 && frame->width == video_codec_ctx->width && frame->height == video_codec_ctx->height;
+    }
+
     void close() {
         swr_free(&swr_ctx);
         avcodec_free_context(&audio_codec_ctx);

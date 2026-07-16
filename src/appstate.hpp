@@ -94,8 +94,9 @@ struct AppState {
         {
 #ifdef _VIDEO_CONVERTER_THREAD_
             video_converter.clear();
-#endif
+#else
             video.video_converted_queue.clear();
+#endif
         }
     }
 
@@ -105,8 +106,9 @@ struct AppState {
         {
 #ifdef _VIDEO_CONVERTER_THREAD_
             video_converter.recycle();
-#endif
+#else
             video.video_converted_queue.recycle(false);
+#endif
         }
         if (audio_stream)
             SDL_ClearAudioStream(audio_stream.get());
@@ -220,7 +222,7 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
         video_converter.start();
 #endif
-        read_next_frame(0);
+        read_next_frame(video.get_start_time());
         lock.unlock();
         fetch_cv.notify_one();
         return true;
@@ -234,7 +236,7 @@ struct AppState {
 #else
             auto video_frame_count = video.video_converted_queue.size();
 #endif
-            if (video_frame_count >= 2 && (!audio_stream || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
+            if (video_frame_count >= 1 && (!audio_stream || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
                 break;
             read_result = video.feed_frame([&](AVFrame *frame) -> void {
                 if (audio_stream) {
@@ -252,7 +254,7 @@ struct AppState {
 //                    printf("SDL_GetAudioStreamQueued: %i\n", SDL_GetAudioStreamQueued(audio_stream.get()));
                 }
             });
-            if (video_frame_count < 2) {
+            if (video_frame_count < 1) {
                 video.feed_video_frame([&](AVFrame *frame) -> void {
                     auto frame_time = frame->pts * video.video_time_base;
                     if (!is_looping && frame_time < play_time) {
@@ -277,6 +279,7 @@ struct AppState {
                         is_looping = false;
                         set_play_time(frame_time);
                     }
+                    last_video_pts = frame->pts;
                 });
             }
             if (read_result < 0)
@@ -294,28 +297,19 @@ struct AppState {
 #endif
                 while (!video.video_converted_queue.empty()) {
                     auto frame = video.video_converted_queue.front();
-                    if (frame->pts < last_video_pts) {
-                        last_video_pts = frame->pts;
+                    auto frame_time = frame->pts * video.video_time_base + tick_diff;
+                    if (frame_time <= curr_ticks) {
                         if (frame_to_display)
-                            video.video_converted_queue.recycle(frame_to_display, false);
+                            video_converter.return_converted_frame(frame_to_display);
                         frame_to_display = frame;
-                        printf("pts1: %i\n", frame_to_display->pts);
                         video.video_converted_queue.pop();
+                    } else
                         break;
-                    }
-                    else
-                    {
-                        auto frame_time = frame->pts * video.video_time_base + tick_diff;
-                        if (frame_time <= curr_ticks) {
-                            last_video_pts = frame->pts;
-                            if (frame_to_display)
-                                video.video_converted_queue.recycle(frame_to_display, false);
-                            frame_to_display = frame;
-                            printf("pts2: %i\n", frame_to_display->pts);
-                            video.video_converted_queue.pop();
-                        } else
-                            break;
-                    }
+                }
+                if (frame_to_display) {
+                    auto old_frame = video_frame.exchange(frame_to_display, std::memory_order_release);
+                    if (old_frame)
+                        video_converter.return_converted_frame(old_frame);
                 }
             }
             if (frame_to_display)
@@ -323,7 +317,6 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
                 video_converter.cv_.notify_one();
 #endif
-                video_frame.store(frame_to_display, std::memory_order_release);
                 SDL_Event event;
                 SDL_zero(event);
                 event.type = USEREVENT_NEXT_FRAME;
@@ -375,6 +368,7 @@ struct AppState {
 #endif
                 return 0; // Stop the timer if no more frames are available
             }
+            curr_ticks = get_ticks();
             curr_ticks -= tick_diff;
 #ifdef _VIDEO_CONVERTER_THREAD_
             auto frame_time = video_converter.next_play_time(curr_ticks);
@@ -382,9 +376,8 @@ struct AppState {
             auto frame_time = video.video_converted_queue.front()->pts * video.video_time_base;
 #endif
             interval = frame_time - curr_ticks;
-            printf("interval: %f\n", interval);
             if (interval <= 0)
-                interval = 0.001;
+                interval = 0.01;
         } else {
             auto rlt = read_next_frame(play_time);
             if (rlt < 0) {

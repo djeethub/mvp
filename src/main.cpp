@@ -104,16 +104,10 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 
     if (event->type == USEREVENT_NEXT_FRAME) {
-        auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
+        auto video_frame = state->video_frame.load(std::memory_order_acquire);
         if (video_frame) {
 //            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
             SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
-#ifdef _VIDEO_CONVERTER_THREAD_
-            {
-                std::lock_guard<std::mutex> lock(state->video_converter.mtx_);
-                state->video.video_converted_queue.recycle(video_frame, false);
-            }
-#endif
         }
 
         return SDL_APP_CONTINUE;
