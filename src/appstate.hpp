@@ -555,4 +555,35 @@ struct AppState {
             is_paused = true;
         }
     }
+
+    void render_direct(AVFrame *frame) {
+        // 1. Lock the texture to get SDL's internal pointers and pitches
+        void* locked_pixels = nullptr;
+        int locked_pitch = 0;
+
+        // For NV12, SDL_LockTexture gives you a pointer to the start of the Y plane
+        if (SDL_LockTexture(texture.get(), NULL, &locked_pixels, &locked_pitch) < 0) {
+            // Handle error
+            return;
+        }
+
+        // 2. Set up your destination arrays for sws_scale
+        uint8_t* dst_data[4] = { nullptr };
+        int dst_linesize[4] = { 0 };
+
+        // NV12 Plane 0: Y Plane
+        dst_data[0] = static_cast<uint8_t*>(locked_pixels);
+        dst_linesize[0] = locked_pitch;
+
+        // NV12 Plane 1: UV Plane 
+        // In NV12, the UV plane starts immediately after the Y plane (width * height)
+        // but scaled to the locked pitch!
+        dst_data[1] = dst_data[0] + (locked_pitch * frame->height);
+        dst_linesize[1] = locked_pitch; // NV12 UV pitch is identical to Y pitch in SDL
+
+        video.scale_video_frame(frame, dst_data, dst_linesize);
+
+        // 4. Unlock to commit the changes and prepare for rendering
+        SDL_UnlockTexture(texture.get());
+    }
 };

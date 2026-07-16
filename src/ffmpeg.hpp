@@ -295,6 +295,12 @@ public:
                   video_codec_ctx->height, converted_frame->data, converted_frame->linesize);
     }
 
+    void scale_video_frame(AVFrame *frame, uint8_t **data, int *linesize)
+    {
+        sws_scale(sws_ctx, frame->data, frame->linesize, 0,
+                  video_codec_ctx->height, data, linesize);
+    }
+
     AVFrame *alloc_converted_frame()
     {
         AVFrame *frame = av_frame_alloc();
@@ -316,11 +322,6 @@ public:
                             frame->width, frame->height, 32);
 
         return frame;
-    }
-
-    bool check_converted_frame(AVFrame *frame)
-    {
-        return frame->format == AV_PIX_FMT_NV12 && frame->width == video_codec_ctx->width && frame->height == video_codec_ctx->height;
     }
 
     void close() {
