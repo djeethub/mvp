@@ -37,92 +37,69 @@ public:
 class VideoConverter : public Worker {
 public:
     void run() {
-        AVFrame *frame = nullptr;
-        AVFrame *converted_frame = nullptr;
+        AVPacket *packet = nullptr;
+        ff::FrameQueue frame_queue;
 
         while (true) {
             // Wait for work or stop signal
             {
                 std::unique_lock<std::mutex> lock(mtx_);
-                if (frame) {
-                    video->video_frame_queue.recycle(frame);
-                    frame = nullptr;
+                if (pts != pts_clear) {
+                    while (!frame_queue.empty()) {
+                        video->video_frame_queue.push(frame_queue.front());
+                        frame_queue.pop();
+                    }
                 }
-                if (converted_frame) {
-                    if (pts == pts_recycle)
-                        video->video_converted_queue.recycle(converted_frame, false);
-                    else if (pts == pts_clear)
-                        av_frame_free(&converted_frame);
-                    else
-                        video->video_converted_queue.push(converted_frame);
-                    pts = pts_undefined;
-                    converted_frame = nullptr;
-                }
+                pts = pts_undefined;
 
                 cv_.wait(lock, [this] {
-                    return stop_ || (!video->video_frame_queue.empty() && video->video_converted_queue.size() < 2);
+                    return stop_ || (!video->video_packet_queue.empty() && video->video_frame_queue.size() < 2);
                 });
 
                 if (stop_) {
                     return;
                 }
 
-                frame = video->video_frame_queue.get();
-                pts = frame->pts;
-                converted_frame = video->video_converted_queue.alloc([this]{ return video->alloc_converted_frame();});
+                packet = video->video_packet_queue.get();
+                pts = 0;
             }
 
             // Do the work outside the lock (important for performance)
-            if (frame && converted_frame) {
-                video->scale_video_frame(frame, converted_frame);
-                converted_frame->pts = frame->pts;
-                converted_frame->duration = frame->duration;
-            }
+            frame_queue.clear();
+            video->feed_video_frame(packet, [&](AVFrame *frame){
+                auto new_frame = frame_queue.alloc();
+                av_frame_ref(new_frame, frame);
+                frame_queue.push(new_frame);
+            });
+            av_packet_free(&packet);
         }
     }
 
     void clear() {
         std::lock_guard<std::mutex> lock(mtx_);
+        video->video_packet_queue.clear();
         video->video_frame_queue.clear();
-        video->video_converted_queue.clear();
         pts = pts_clear;
     }
 
-    void recycle() {
+    auto count_video_packet() {
         std::lock_guard<std::mutex> lock(mtx_);
-        video->video_frame_queue.recycle();
-        video->video_converted_queue.recycle(false);
-        pts = pts_recycle;
-    }
-
-    auto count_video_frame() {
-        std::lock_guard<std::mutex> lock(mtx_);
-        return video->video_frame_queue.size();
+        return video->video_packet_queue.size();
     }
 
     bool empty() {
         std::lock_guard<std::mutex> lock(mtx_);
-        return pts <= pts_undefined && video->video_frame_queue.empty() && video->video_converted_queue.empty();
+        return pts <= pts_undefined && video->video_frame_queue.empty() && video->video_packet_queue.empty();
     }
 
     double next_play_time(double play_time) {
         std::lock_guard<std::mutex> lock(mtx_);
-        if (!video->video_converted_queue.empty()) {
-            return video->video_converted_queue.front()->pts * video->video_time_base;
-        }
-        if (pts > pts_undefined)
-            return pts * video->video_time_base;
         if (!video->video_frame_queue.empty()) {
             return video->video_frame_queue.front()->pts * video->video_time_base;
         }
+        if (pts > pts_undefined)
+            return pts * video->video_time_base;
         return 0;
-    }
-
-    void return_converted_frame(AVFrame *frame) {
-        if (video->check_converted_frame(frame))
-            video->video_converted_queue.recycle(frame, false);
-        else
-            av_frame_free(&frame);
     }
 
     ff::VideoFile *video;
@@ -130,7 +107,6 @@ public:
 private:
     int64_t pts = pts_undefined;
     const int64_t pts_undefined = SDL_MIN_SINT64 + 99;
-    const int64_t pts_recycle = SDL_MIN_SINT64 + 1;
     const int64_t pts_clear = SDL_MIN_SINT64;
     AVBufferPool *my_pool = nullptr;
 };

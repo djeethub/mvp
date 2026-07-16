@@ -10,6 +10,7 @@ extern "C" {
 #include <libswresample/swresample.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
 }
 
 namespace ff {
@@ -39,10 +40,9 @@ struct AudioBuffer {
     }
 };
 
-template <typename DataPtr, DataPtr (*AllocFunc)(), void (*FreeFunc)(DataPtr*), void (*UnrefFunc)(DataPtr)>
+template <typename DataPtr, DataPtr (*AllocFunc)(), void (*FreeFunc)(DataPtr*)>
 struct AvQueue {
     std::queue<DataPtr> queue;
-    std::queue<DataPtr> trash;
 
     ~AvQueue() {
         clear();
@@ -53,11 +53,6 @@ struct AvQueue {
         {
             FreeFunc(&queue.front());
             queue.pop();
-        }
-        while (!trash.empty())
-        {
-            FreeFunc(&trash.front());
-            trash.pop();
         }
     }
 
@@ -76,26 +71,12 @@ struct AvQueue {
     }
 
     DataPtr alloc() {
-        DataPtr data_ptr = nullptr;
-        if (trash.empty())
-            data_ptr = AllocFunc();
-        else {
-            data_ptr = trash.front();
-            trash.pop();
-        }
-        return data_ptr;
+        return AllocFunc();
     }
 
     template <typename CustomAllocFunc>
     DataPtr alloc(CustomAllocFunc func) {
-        DataPtr data_ptr = nullptr;
-        if (trash.empty())
-            data_ptr = func();
-        else {
-            data_ptr = trash.front();
-            trash.pop();
-        }
-        return data_ptr;
+        return func();
     }
 
     void push(DataPtr data_ptr) {
@@ -104,21 +85,9 @@ struct AvQueue {
         }
     }
 
-    void recycle(DataPtr data_ptr, bool unref = true) {
+    void clear(DataPtr data_ptr) {
         if (data_ptr) {
-            if (unref)
-                UnrefFunc(data_ptr);
-            trash.push(data_ptr);
-        }
-    }
-
-    void recycle(bool unref = true) {
-        while (!queue.empty()) {
-            auto data_ptr = queue.front();
-            if (unref)
-                UnrefFunc(data_ptr);
-            trash.push(data_ptr);
-            queue.pop();
+            FreeFunc(&data_ptr);
         }
     }
 
@@ -131,8 +100,8 @@ struct AvQueue {
     }
 };
 
-typedef AvQueue<AVPacket *, av_packet_alloc, av_packet_free, av_packet_unref> PacketQueue;
-typedef AvQueue<AVFrame *, av_frame_alloc, av_frame_free, av_frame_unref> FrameQueue;
+typedef AvQueue<AVPacket *, av_packet_alloc, av_packet_free> PacketQueue;
+typedef AvQueue<AVFrame *, av_frame_alloc, av_frame_free> FrameQueue;
 
 class VideoFile {
 public:
@@ -244,12 +213,11 @@ public:
         return sws_ctx != nullptr;
     }
 
-    template <typename AudioFeedFunc>
-    int feed_frame(AudioFeedFunc audio_feed)
+    template <typename AudioFeedFunc, typename VideoFeedFunc>
+    int feed_frame(AudioFeedFunc audio_feed, VideoFeedFunc video_feed)
     {
-        auto packet = video_packet_queue.alloc();
-        if (!frame)
-            frame = av_frame_alloc();
+        if (!packet) packet = av_packet_alloc();
+        if (!frame) frame = av_frame_alloc();
 
         auto read_result = av_read_frame(format_ctx, packet);
         if (read_result < 0)
@@ -270,36 +238,25 @@ public:
         }
         else if (packet->stream_index == video_stream_index)
         {
-            video_packet_queue.push(packet);
-//            printf("video_packet_queue %i\n", video_packet_queue.queue.size());
-            packet = nullptr;
+            video_feed(packet);
         }
-        if (packet)
-            video_packet_queue.recycle(packet);
+        av_packet_unref(packet);
 
         return read_result;
     }
 
     template <typename VideoFeedFunc>
-    bool feed_video_frame(VideoFeedFunc video_feed) {
-        auto fed = false;
-        while (!fed && !video_packet_queue.empty()) {
-            AVPacket *packet = video_packet_queue.get();
-            if (avcodec_send_packet(video_codec_ctx, packet) >= 0)
+    void feed_video_frame(AVPacket *packet, VideoFeedFunc video_feed) {
+        if (avcodec_send_packet(video_codec_ctx, packet) >= 0)
+        {
+            while (avcodec_receive_frame(video_codec_ctx, frame) >= 0)
             {
-                while (avcodec_receive_frame(video_codec_ctx, frame) >= 0)
-                {
-                    if (frame->pts != AV_NOPTS_VALUE) {
-                        video_feed(frame);
-                        fed = true;
-                    }
-                    av_frame_unref(frame);
+                if (frame->pts != AV_NOPTS_VALUE) {
+                    video_feed(frame);
                 }
+                av_frame_unref(frame);
             }
-            video_packet_queue.recycle(packet);
         }
-
-        return fed;
     }
 
     void convert_audio_frame(AVFrame *frame, AudioBuffer *audio_buf)
@@ -340,12 +297,25 @@ public:
 
     AVFrame *alloc_converted_frame()
     {
-        AVFrame *converted_frame = av_frame_alloc();
-        converted_frame->format = AV_PIX_FMT_NV12;
-        converted_frame->width = video_codec_ctx->width;
-        converted_frame->height = video_codec_ctx->height;
-        av_frame_get_buffer(converted_frame, 0); // Allocate the internal pixel memory arrays
-        return converted_frame;
+        AVFrame *frame = av_frame_alloc();
+        frame->format = AV_PIX_FMT_NV12;
+        frame->width  = video_codec_ctx->width;
+        frame->height = video_codec_ctx->height;
+
+        if (!converted_pool) {
+            int buffer_size = av_image_get_buffer_size(static_cast<AVPixelFormat>(frame->format), frame->width, frame->height, 32);
+            converted_pool = av_buffer_pool_init(buffer_size, NULL);
+        }
+
+        // 2. Instead of av_frame_get_buffer, grab a buffer from your pool
+        frame->buf[0] = av_buffer_pool_get(converted_pool);
+            
+        // 3. Link the frame's data pointers to the pool buffer
+        av_image_fill_arrays(frame->data, frame->linesize, 
+                            frame->buf[0]->data, static_cast<AVPixelFormat>(frame->format), 
+                            frame->width, frame->height, 32);
+
+        return frame;
     }
 
     bool check_converted_frame(AVFrame *frame)
@@ -361,7 +331,8 @@ public:
         av_frame_free(&frame);
         audio_stream_index = -1;
         video_stream_index = -1;
-        video_packet_queue.recycle();
+        video_packet_queue.clear();
+        av_buffer_pool_uninit(&converted_pool);
     }
 
     void get_video_dimensions(int& width, int& height) const {
@@ -400,7 +371,7 @@ public:
                 INT64_MIN, ts, INT64_MAX,
                 AVSEEK_FLAG_BACKWARD);
         if (seek_result >= 0) {
-            video_packet_queue.recycle();
+            video_packet_queue.clear();
             if (audio_codec_ctx)
                 avcodec_flush_buffers(audio_codec_ctx);
             if (video_codec_ctx)
@@ -460,16 +431,17 @@ private:
     SwsContext* sws_ctx = nullptr;
     int video_stream_index = -1;
 
+    AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
-    PacketQueue video_packet_queue;
     double duration;
 
 public:
     double video_time_base = 0.0;
     double audio_time_base = 0.0;
+    PacketQueue video_packet_queue;
 #ifdef _VIDEO_CONVERTER_THREAD_
     FrameQueue video_frame_queue;
 #endif
-    FrameQueue video_converted_queue;
+    AVBufferPool *converted_pool = nullptr;
 };
 } // namespace ff
