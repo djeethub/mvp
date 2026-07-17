@@ -238,6 +238,12 @@ struct AppState {
             }
         }
 
+        if (video.find_subtitle_stream()) {
+            if (video.open_subtitle_decoder()) {
+
+            }
+        }
+
         chapter_list = video.ReadChapters();
 
         image_aspect = img_h > 0 ? static_cast<float>(img_w) / img_h : 1.0f;
@@ -257,6 +263,28 @@ struct AppState {
         fetch_cv.notify_one();
         return true;
     }
+
+    // Helper to isolate the Dialogue payload and extract the text
+    std::string extract_dialogue_ass(const std::string& line) {
+        size_t pos = 0;
+        int comma_count = 0;
+
+        // In rect->ass, we need to skip exactly 8 commas to reach the text
+        while (comma_count < 8 && pos != std::string::npos) {
+            pos = line.find(',', pos);
+            if (pos != std::string::npos) {
+                comma_count++;
+                pos++; // Move right past the found comma
+            }
+        }
+
+        // If we successfully skipped 8 commas, slice out the remaining string
+        if (comma_count == 8 && pos < line.length()) {
+            return line.substr(pos);
+        }
+
+        return line; // Fallback if string is unexpected or malformed
+    }    
 
     int read_next_frame(double play_time) {
         int read_result = 0;
@@ -291,6 +319,20 @@ struct AppState {
                     video.video_packet_queue.push(new_packet);
                 }
                 video_converter.cv_.notify_one();
+            }, [&](AVSubtitle& subtitle){
+                // Iterate through the subtitle rectangles (lines/images)
+                for (unsigned int i = 0; i < subtitle.num_rects; i++) {
+                    AVSubtitleRect* rect = subtitle.rects[i];
+                    
+                    if (rect->type == SUBTITLE_TEXT && rect->text) {
+                        std::cout << "[" << subtitle.start_display_time << "ms] " << rect->text << "\n";
+                    } 
+                    else if (rect->type == SUBTITLE_ASS && rect->ass) {
+                        // ASS subtitles contain formatting markers (e.g., {\an8}) alongside text
+//                        std::cout << "<" << subtitle.start_display_time << "ms> " << rect->ass << "\n";
+                        std::cout << extract_dialogue_ass(rect->ass) << "\n";
+                    }
+                }
             });
             if (read_result < 0)
                 break;

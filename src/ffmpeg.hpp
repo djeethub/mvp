@@ -3,6 +3,8 @@
 #include <iostream>
 #include <string>
 #include <queue>
+#include <unordered_set>
+#include <format>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -11,6 +13,7 @@ extern "C" {
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/dict.h>
 }
 
 namespace ff {
@@ -100,6 +103,13 @@ struct AvQueue {
     }
 };
 
+struct Subtitle {
+    int idx;
+    std::string lang;
+    std::string title;
+    AVCodecID codec_id;
+};
+
 typedef AvQueue<AVPacket *, av_packet_alloc, av_packet_free> PacketQueue;
 typedef AvQueue<AVFrame *, av_frame_alloc, av_frame_free> FrameQueue;
 
@@ -132,6 +142,47 @@ public:
         }
         duration = format_ctx->duration / (double)AV_TIME_BASE;
         return true;
+    }
+
+    std::string get_stream_metadata(const AVStream* stream, const char *key) {
+        if (!stream || !stream->metadata) {
+            return "Unknown";
+        }
+        
+        // Look up the key in the stream's metadata dictionary
+        AVDictionaryEntry* entry = av_dict_get(stream->metadata, key, nullptr, 0);
+        if (entry && entry->value) {
+            return std::string(entry->value);
+        }
+        
+        return "Unknown";
+    }    
+
+    bool find_subtitle_stream()
+    {
+        for (unsigned int i = 0; i < format_ctx->nb_streams; i++)
+        {
+            if (format_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
+            {
+                auto stream = format_ctx->streams[i];
+                auto subtitle = Subtitle();
+                subtitle.idx = i;
+                subtitle.lang = get_stream_metadata(stream, "language");
+                if (lang_set.contains(subtitle.lang)) {
+                    subtitle.title = get_stream_metadata(stream, "title");
+                    subtitle.codec_id = stream->codecpar->codec_id;
+                    subtitles.push_back(subtitle);
+                    std::cout << std::format("{} ({})\n", subtitle.title, subtitle.lang);
+                }
+            }
+        }
+
+        if (!subtitles.empty())
+        {
+            subtitle_stream_idx = subtitles.front().idx;
+            return true;
+        }
+        return false;
     }
 
     bool find_audio_stream()
@@ -189,6 +240,15 @@ public:
         return true;
     }
 
+    bool open_subtitle_decoder() {
+        AVCodecParameters *codec_params = format_ctx->streams[subtitle_stream_idx]->codecpar;
+        const AVCodec *codec = avcodec_find_decoder(codec_params->codec_id);
+        subtitle_codec_ctx = avcodec_alloc_context3(codec);
+        avcodec_parameters_to_context(subtitle_codec_ctx, codec_params);
+        avcodec_open2(subtitle_codec_ctx, codec, nullptr);
+        return true;
+    }
+
     bool setup_swr_context()
     {
         // Explicitly define a 2-channel Stereo Layout for the destination
@@ -219,8 +279,8 @@ public:
         return sws_ctx != nullptr;
     }
 
-    template <typename AudioFeedFunc, typename VideoFeedFunc>
-    int feed_frame(AudioFeedFunc audio_feed, VideoFeedFunc video_feed)
+    template <typename AudioFeedFunc, typename VideoFeedFunc, typename SubtitleFeedFunc>
+    int feed_frame(AudioFeedFunc audio_feed, VideoFeedFunc video_feed, SubtitleFeedFunc subtitle_feed)
     {
         if (!packet) packet = av_packet_alloc();
         if (!frame) frame = av_frame_alloc();
@@ -245,6 +305,18 @@ public:
         else if (packet->stream_index == video_stream_index)
         {
             video_feed(packet);
+        }
+        else if (packet->stream_index == subtitle_stream_idx) {
+            int got_subtitle = 0;
+            AVSubtitle subtitle;
+            // avcodec_decode_subtitle2 is old but still the standard way to handle subtitles in modern FFmpeg
+            if (avcodec_decode_subtitle2(subtitle_codec_ctx, &subtitle, &got_subtitle, packet) >= 0) {
+                if (got_subtitle) {
+                    subtitle_feed(subtitle);
+                    // Free the allocated subtitle struct memory
+                    avsubtitle_free(&subtitle);
+                }
+            }
         }
         av_packet_unref(packet);
 
@@ -337,6 +409,7 @@ public:
     void close() {
         avcodec_free_context(&audio_codec_ctx);
         avcodec_free_context(&video_codec_ctx);
+        avcodec_free_context(&subtitle_codec_ctx);
         avformat_close_input(&format_ctx);
         av_frame_free(&frame);
         av_frame_free(&video_frame);
@@ -345,8 +418,10 @@ public:
         sws_free_context(&sws_ctx);
         audio_stream_index = -1;
         video_stream_index = -1;
+        subtitle_stream_idx = -1;
         video_packet_queue.clear();
         av_buffer_pool_uninit(&converted_pool);
+        subtitles.clear();
     }
 
     void get_video_dimensions(int& width, int& height) const {
@@ -479,6 +554,10 @@ private:
     AVFrame* video_frame = nullptr;
     AVBufferRef *hw_device_ctx = NULL;
     double duration;
+    std::vector<Subtitle> subtitles;
+    std::unordered_set<std::string> lang_set = {"en", "eng", "ja", "jpn"};
+    int subtitle_stream_idx = -1;
+    AVCodecContext* subtitle_codec_ctx = nullptr;
 
 public:
     double video_time_base = 0.0;
