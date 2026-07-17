@@ -146,6 +146,48 @@ struct AppState {
         return true;
     }
 
+    bool open_file(const char *file_path) {
+        if (!is_supported_image(file_path)) {
+            std::cerr << "Not supported file: " << file_path << "\n";
+            return false;
+        }
+
+        current_index = 0;
+        image_files.clear();
+
+        fs::path argpath = file_path;
+        if (argpath.has_parent_path()) {
+            parent_dir = argpath.parent_path().string();
+            if (parent_dir.back() != fs::path::preferred_separator) parent_dir.push_back(fs::path::preferred_separator);
+            image_files.push_back(argpath.filename().string());
+        } else {
+            parent_dir = std::string("./");
+            image_files.push_back(argpath.filename().string());
+        }
+
+        // Enumerate directory for supported images
+        try {
+            for (auto &entry : fs::directory_iterator(parent_dir)) {
+                if (!entry.is_regular_file()) continue;
+                if (is_supported_image(entry.path())) {
+                    image_files.push_back(entry.path().filename().string());
+                }
+            }
+            // remove duplicates and sort
+            std::sort(image_files.begin(), image_files.end());
+            image_files.erase(std::unique(image_files.begin(), image_files.end()), image_files.end());
+
+            // find initial file index
+            auto it = std::find(image_files.begin(), image_files.end(), argpath.filename().string());
+            if (it != image_files.end()) current_index = static_cast<std::size_t>(std::distance(image_files.begin(), it));
+        } catch (...) {
+            // filesystem errors -> failure
+            return false;
+        }
+
+        return true;
+    }
+
     bool load_image_at_index() {
         if (image_files.empty() || !renderer) return false;
 

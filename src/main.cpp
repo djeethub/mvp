@@ -49,35 +49,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
 
     auto state = new AppState();
     *appstate = state;
-
-    fs::path argpath = argv[1];
-    if (argpath.has_parent_path()) {
-        state->parent_dir = argpath.parent_path().string();
-        if (state->parent_dir.back() != fs::path::preferred_separator) state->parent_dir.push_back(fs::path::preferred_separator);
-        state->image_files.push_back(argpath.filename().string());
-    } else {
-        state->parent_dir = std::string("./");
-        state->image_files.push_back(argpath.filename().string());
-    }
-
-    // Enumerate directory for supported images
-    try {
-        for (auto &entry : fs::directory_iterator(state->parent_dir)) {
-            if (!entry.is_regular_file()) continue;
-            if (AppState::is_supported_image(entry.path())) {
-                state->image_files.push_back(entry.path().filename().string());
-            }
-        }
-        // remove duplicates and sort
-        std::sort(state->image_files.begin(), state->image_files.end());
-        state->image_files.erase(std::unique(state->image_files.begin(), state->image_files.end()), state->image_files.end());
-
-        // find initial file index
-        auto it = std::find(state->image_files.begin(), state->image_files.end(), argpath.filename().string());
-        if (it != state->image_files.end()) state->current_index = static_cast<std::size_t>(std::distance(state->image_files.begin(), it));
-    } catch (...) {
-        // filesystem errors -> failure
-    }
+    state->open_file(argv[1]);
 
     Uint32 window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIDDEN;
     state->window.reset(SDL_CreateWindow("miv", 800, 600, window_flags));
@@ -249,51 +221,20 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             }
     }
 
+    if (event->type == SDL_EVENT_DROP_FILE) {
+        // In SDL3, the path is stored in event.drop.data (instead of event.drop.file)
+        const char* dropped_file_path = event->drop.data;
+        if (dropped_file_path) {
+            std::cout << "File dropped: " << dropped_file_path << std::endl;
+            if (state->open_file(dropped_file_path)) {
+                state->load_image_at_index();
+            }
+        }
+    }
+
     return SDL_APP_CONTINUE;
 }
 
-/* inline void DrawOSD(AppState *state)
-{
-    // 1. Check if the OSD has expired
-    if (SDL_GetTicks() > state->osd_noti.expires_at)
-    {
-        return; // Stale message, don't render anything
-    }
-
-    // 2. Position the OSD in the top-right corner of the viewport
-    // (You can change this to center or bottom depending on preference)
-    const float PADDING = 20.0f;
-    const ImGuiViewport *viewport = ImGui::GetMainViewport();
-    ImVec2 target_pos = ImVec2(
-        viewport->WorkPos.x + PADDING,
-        viewport->WorkPos.y + PADDING);
-
-    // Set pivot point to top-right (1.0f, 0.0f) so padding scales correctly
-    ImGui::SetNextWindowPos(target_pos, ImGuiCond_Always, ImVec2(0.0f, 0.0f));
-
-    // Make the background semi-transparent black
-    ImGui::SetNextWindowBgAlpha(0.0f);
-
-    // 3. Configure window flags to make it completely non-interactive
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
-                             ImGuiWindowFlags_AlwaysAutoResize |
-                             ImGuiWindowFlags_NoSavedSettings |
-                             ImGuiWindowFlags_NoFocusOnAppearing |
-                             ImGuiWindowFlags_NoNav |
-                             ImGuiWindowFlags_NoMove;
-
-    // 4. Render the window
-    if (ImGui::Begin("##OSD_Overlay", nullptr, flags))
-    {
-        // Optional: Make text larger or use a bold font if loaded
-        ImGui::SetWindowFontScale(2.0f);
-
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", state->osd_noti.text.c_str());
-
-        ImGui::End();
-    }
-}
- */
 SDL_AppResult SDL_AppIterate(void *appstate) {
     auto *state = static_cast<AppState*>(appstate);
 
