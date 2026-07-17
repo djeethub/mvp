@@ -73,163 +73,149 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     auto *state = static_cast<AppState*>(appstate);
     ImGui_ImplSDL3_ProcessEvent(event);
 
-    if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
-
-    if (event->type == USEREVENT_NEXT_FRAME) {
-        auto video_frame = state->video_frame.load(std::memory_order_acquire);
-        if (video_frame) {
-//            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
-//            SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
-            state->draw_texture2(video_frame);
-        }
-
-        return SDL_APP_CONTINUE;
-    }
-
-/*     if (event->type == SDL_EVENT_WINDOW_RESIZED && state->window && event->window.windowID == SDL_GetWindowID(state->window.get()) && state->image_aspect > 0.0f) {
-        int new_w = event->window.data1;
-        int new_h = event->window.data2;
-        if (new_w > 0 && new_h > 0) {
-            int adjusted_h = static_cast<int>(std::round(new_w / state->image_aspect));
-            int adjusted_w = static_cast<int>(std::round(new_h * state->image_aspect));
-            int target_w, target_h;
-            if (std::abs(adjusted_h - new_h) < std::abs(adjusted_w - new_w)) {
-                target_w = new_w;
-                target_h = adjusted_h;
-            } else {
-                target_w = adjusted_w;
-                target_h = new_h;
-            }
-            if (target_w > 0 && target_h > 0 && (target_w != new_w || target_h != new_h)) {
-                SDL_SetWindowSize(state->window.get(), target_w, target_h);
+    switch (event->type) {
+        case USEREVENT_NEXT_FRAME:
+        {
+            auto video_frame = state->video_frame.load(std::memory_order_acquire);
+            if (video_frame) {
+    //            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
+    //            SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
+                state->draw_texture2(video_frame);
             }
         }
-    }
- */
-    if (event->type == SDL_EVENT_MOUSE_WHEEL && !ImGui::GetIO().WantCaptureMouse) {
-        if (event->wheel.y < 0) {
-        } else if (event->wheel.y > 0) {
-        }
-    }
+            break;
 
-    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-        if (event->button.button == SDL_BUTTON_RIGHT)
-            state->trigger_context_menu = true;
-        else if (event->button.button == SDL_BUTTON_MIDDLE) {
-            state->pause();
-            gui.show_noti(state->is_paused ? "Paused" : "Resumed");
-        }
-    }
+        case SDL_EVENT_QUIT:
+            return SDL_APP_SUCCESS;
 
-    if (event->type == SDL_EVENT_KEY_DOWN) {
-        switch (event->key.key) {
-            case SDLK_ESCAPE: return SDL_APP_SUCCESS;
-            case SDLK_RETURN:
-            case SDLK_PERIOD:
-                if (state->image_files.size() > 1) {
-                    state->current_index = (state->current_index + 1) % state->image_files.size();
-                    state->load_image_at_index();
-                }
-                break;
-            case SDLK_COMMA:
-                if (state->image_files.size() > 1) {
-                    state->current_index = (state->current_index + state->image_files.size() - 1) % state->image_files.size();
-                    state->load_image_at_index();
-                }
-                break;
-            case SDLK_L:
-                if (event->key.mod & SDL_KMOD_CTRL) {
-                    const auto &filename = state->image_files[state->current_index];
-                    const fs::path full = fs::path(state->parent_dir) / filename;
-                    open_file_location(full);
-                }
-                break;
-            case SDLK_KP_9:
-                state->video_scale += SCALE_N;
-                gui.show_noti(std::format("Video Scale: {:.2f}", state->video_scale));
-                break;
-            case SDLK_KP_1:
-                state->video_scale -= SCALE_N;
-                gui.show_noti(std::format("Video Scale: {:.2f}", state->video_scale));
-                break;
-            case SDLK_KP_5:
-                state->video_scale = 1;
-                state->video_pan_x = 0;
-                state->video_pan_y = 0;
-                gui.show_noti("Video Reset");
-                break;
-            case SDLK_KP_4:
-                state->video_pan_x -= PAN_N;
-                gui.show_noti(std::format("Video Pan X: {}", state->video_pan_x));
-                break;
-            case SDLK_KP_6:
-                state->video_pan_x += PAN_N;
-                gui.show_noti(std::format("Video Pan X: {}", state->video_pan_x));
-                break;
-            case SDLK_KP_8:
-                state->video_pan_y -= PAN_N;
-                gui.show_noti(std::format("Video Pan Y: {}", state->video_pan_y));
-                break;
-            case SDLK_KP_2:
-                state->video_pan_y += PAN_N;
-                gui.show_noti(std::format("Video Pan Y: {}", state->video_pan_y));
-                break;
-            case SDLK_1:
-                if (event->key.mod & SDL_KMOD_ALT) {
-                    state->resize_window(0.5);
-                    gui.show_noti("Window Scale: 0.5");
-                }
-                break;
-            case SDLK_2:
-                if (event->key.mod & SDL_KMOD_ALT)
-                {
-                    state->resize_window(1);
-                    gui.show_noti("Window Scale: 1");
-                }
-                break;
-            case SDLK_3:
-                if (event->key.mod & SDL_KMOD_ALT)
-                {
-                    state->resize_window(2);
-                    gui.show_noti("Window Scale: 2");
-                }
-                break;
-            case SDLK_RIGHT:
-                state->seek_relative(event->key.mod & SDL_KMOD_ALT ? 15 : 5);
-                break;
-            case SDLK_LEFT:
-                state->seek_relative(event->key.mod & SDL_KMOD_ALT ? -15 : -5);
-                break;
-
-            case SDLK_PAGEDOWN:
-            case SDLK_PAGEUP:
-            {
-                auto id = state->get_relative_chapter(event->key.key == SDLK_PAGEDOWN ? 1 : -1);
-                if (id >= 0) {
-                    if (state->seek_to_chapter(id))
-                        gui.show_noti(state->chapter_list[id].title);
-                } else {
-                    state->seek_relative(event->key.key == SDLK_PAGEDOWN ? 30 : -30);
+        case SDL_EVENT_MOUSE_WHEEL:
+            if (!ImGui::GetIO().WantCaptureMouse) {
+                if (event->wheel.y < 0) {
+                } else if (event->wheel.y > 0) {
                 }
             }
-                break;
+            break;
 
-            case SDLK_SPACE:
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            if (event->button.button == SDL_BUTTON_RIGHT)
+                state->trigger_context_menu = true;
+            else if (event->button.button == SDL_BUTTON_MIDDLE) {
                 state->pause();
                 gui.show_noti(state->is_paused ? "Paused" : "Resumed");
-                break;
             }
-    }
+            break;
 
-    if (event->type == SDL_EVENT_DROP_FILE) {
-        // In SDL3, the path is stored in event.drop.data (instead of event.drop.file)
-        const char* dropped_file_path = event->drop.data;
-        if (dropped_file_path) {
-            std::cout << "File dropped: " << dropped_file_path << std::endl;
-            if (state->open_file(dropped_file_path)) {
-                state->load_image_at_index();
+        case SDL_EVENT_KEY_DOWN:
+            switch (event->key.key) {
+                case SDLK_ESCAPE: return SDL_APP_SUCCESS;
+                case SDLK_RETURN:
+                case SDLK_PERIOD:
+                    if (state->image_files.size() > 1) {
+                        state->current_index = (state->current_index + 1) % state->image_files.size();
+                        state->load_image_at_index();
+                    }
+                    break;
+                case SDLK_COMMA:
+                    if (state->image_files.size() > 1) {
+                        state->current_index = (state->current_index + state->image_files.size() - 1) % state->image_files.size();
+                        state->load_image_at_index();
+                    }
+                    break;
+                case SDLK_L:
+                    if (event->key.mod & SDL_KMOD_CTRL) {
+                        const auto &filename = state->image_files[state->current_index];
+                        const fs::path full = fs::path(state->parent_dir) / filename;
+                        open_file_location(full);
+                    }
+                    break;
+                case SDLK_KP_9:
+                    state->video_scale += SCALE_N;
+                    gui.show_noti(std::format("Video Scale: {:.2f}", state->video_scale));
+                    break;
+                case SDLK_KP_1:
+                    state->video_scale -= SCALE_N;
+                    gui.show_noti(std::format("Video Scale: {:.2f}", state->video_scale));
+                    break;
+                case SDLK_KP_5:
+                    state->video_scale = 1;
+                    state->video_pan_x = 0;
+                    state->video_pan_y = 0;
+                    gui.show_noti("Video Reset");
+                    break;
+                case SDLK_KP_4:
+                    state->video_pan_x -= PAN_N;
+                    gui.show_noti(std::format("Video Pan X: {}", state->video_pan_x));
+                    break;
+                case SDLK_KP_6:
+                    state->video_pan_x += PAN_N;
+                    gui.show_noti(std::format("Video Pan X: {}", state->video_pan_x));
+                    break;
+                case SDLK_KP_8:
+                    state->video_pan_y -= PAN_N;
+                    gui.show_noti(std::format("Video Pan Y: {}", state->video_pan_y));
+                    break;
+                case SDLK_KP_2:
+                    state->video_pan_y += PAN_N;
+                    gui.show_noti(std::format("Video Pan Y: {}", state->video_pan_y));
+                    break;
+                case SDLK_1:
+                    if (event->key.mod & SDL_KMOD_ALT) {
+                        state->resize_window(0.5);
+                        gui.show_noti("Window Scale: 0.5");
+                    }
+                    break;
+                case SDLK_2:
+                    if (event->key.mod & SDL_KMOD_ALT)
+                    {
+                        state->resize_window(1);
+                        gui.show_noti("Window Scale: 1");
+                    }
+                    break;
+                case SDLK_3:
+                    if (event->key.mod & SDL_KMOD_ALT)
+                    {
+                        state->resize_window(2);
+                        gui.show_noti("Window Scale: 2");
+                    }
+                    break;
+                case SDLK_RIGHT:
+                    state->seek_relative(event->key.mod & SDL_KMOD_ALT ? 15 : 5);
+                    break;
+                case SDLK_LEFT:
+                    state->seek_relative(event->key.mod & SDL_KMOD_ALT ? -15 : -5);
+                    break;
+
+                case SDLK_PAGEDOWN:
+                case SDLK_PAGEUP:
+                {
+                    auto id = state->get_relative_chapter(event->key.key == SDLK_PAGEDOWN ? 1 : -1);
+                    if (id >= 0) {
+                        if (state->seek_to_chapter(id))
+                            gui.show_noti(state->chapter_list[id].title);
+                    } else {
+                        state->seek_relative(event->key.key == SDLK_PAGEDOWN ? 30 : -30);
+                    }
+                }
+                    break;
+
+                case SDLK_SPACE:
+                    state->pause();
+                    gui.show_noti(state->is_paused ? "Paused" : "Resumed");
+                    break;
+            }
+            break;
+
+        case SDL_EVENT_DROP_FILE:
+        {
+            const char* dropped_file_path = event->drop.data;
+            if (dropped_file_path) {
+                std::cout << "File dropped: " << dropped_file_path << std::endl;
+                if (state->open_file(dropped_file_path)) {
+                    state->load_image_at_index();
+                }
             }
         }
+            break;
     }
 
     return SDL_APP_CONTINUE;
