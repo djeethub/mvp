@@ -140,8 +140,13 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         }
     }
 
-    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_RIGHT) {
-        state->trigger_context_menu = true;
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        if (event->button.button == SDL_BUTTON_RIGHT)
+            state->trigger_context_menu = true;
+        else if (event->button.button == SDL_BUTTON_MIDDLE) {
+            state->pause();
+            gui.show_noti(state->is_paused ? "Paused" : "Resumed");
+        }
     }
 
     if (event->type == SDL_EVENT_KEY_DOWN) {
