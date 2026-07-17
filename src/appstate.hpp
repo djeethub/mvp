@@ -67,6 +67,7 @@ struct AppState {
     std::vector<ff::ChapterData> chapter_list;
     double pause_time;
     bool is_paused = false;
+    int last_pixfmt = AV_PIX_FMT_NONE;
 #ifdef _VIDEO_CONVERTER_THREAD_
     VideoConverter video_converter;
 #endif
@@ -126,6 +127,8 @@ struct AppState {
         last_video_pts = SDL_MAX_SINT64;
         last_audio_pts = SDL_MAX_SINT64;
         is_looping = false;
+        last_pixfmt = AV_PIX_FMT_NONE;
+        texture.reset(nullptr);
     }
 
     bool shutdown() {
@@ -186,36 +189,16 @@ struct AppState {
             }
         }
 
-        float img_w = 640, img_h = 480;
+        int img_w = 640, img_h = 480;
         if (video.find_video_stream()) {
             if (video.open_video_decoder()) {
-                video.setup_sws_context();
-                
-                int w, h;
-                video.get_video_dimensions(w, h);
-
-                // Create an SDL3 texture that matches the video dimensions
-                SDL_Texture* tex = SDL_CreateTexture(
-                    renderer.get(), 
-                    SDL_PIXELFORMAT_NV12,   // Super fast native YUV streaming
-                    SDL_TEXTUREACCESS_STREAMING, 
-                    w, 
-                    h
-                );
-                if (!tex) return false;
-                SDL_SetRenderTarget(renderer.get(), tex);
-                SDL_SetRenderDrawColor(renderer.get(), 0, 0, 0, SDL_ALPHA_OPAQUE);
-                SDL_RenderClear(renderer.get());
-                SDL_SetRenderTarget(renderer.get(), NULL);
-
-                SDL_GetTextureSize(tex, &img_w, &img_h);
-                texture.reset(tex);
+                video.get_video_dimensions(img_w, img_h);
             }
         }
 
         chapter_list = video.ReadChapters();
 
-        image_aspect = img_h > 0.0f ? img_w / img_h : 1.0f;
+        image_aspect = img_h > 0 ? static_cast<float>(img_w) / img_h : 1.0f;
         resize_window();
         SDL_SetWindowTitle(window.get(), filename.c_str());
 
@@ -304,11 +287,17 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
                 video_converter.cv_.notify_one();
 #endif
-                auto converted_frame = video.alloc_converted_frame();
-                video.scale_video_frame(frame_to_display, converted_frame);
-                av_frame_free(&frame_to_display);
-                auto old_frame = video_frame.exchange(converted_frame, std::memory_order_release);
-                av_frame_free(&old_frame);
+                if (frame_to_display->format == AV_PIX_FMT_NV12) {
+                    auto old_frame = video_frame.exchange(frame_to_display, std::memory_order_release);
+                    av_frame_free(&old_frame);
+                } else {
+                    auto converted_frame = video.alloc_converted_frame();
+                    video.scale_video_frame(frame_to_display, converted_frame);
+                    converted_frame->duration = frame_to_display->duration;
+                    av_frame_free(&frame_to_display);
+                    auto old_frame = video_frame.exchange(converted_frame, std::memory_order_release);
+                    av_frame_free(&old_frame);
+                }
 
                 SDL_Event event;
                 SDL_zero(event);
@@ -488,10 +477,8 @@ struct AppState {
     }
 
     void resize_window(float window_scale = 1.0) {
-        if (!texture)
-            return;
-        float img_w, img_h;
-        SDL_GetTextureSize(texture.get(), &img_w, &img_h);
+        int img_w, img_h;
+        video.get_video_dimensions(img_w, img_h);
 
         SDL_DisplayID primary_display = SDL_GetPrimaryDisplay();
         SDL_Rect display_bounds;
@@ -585,5 +572,73 @@ struct AppState {
 
         // 4. Unlock to commit the changes and prepare for rendering
         SDL_UnlockTexture(texture.get());
+    }
+
+    SDL_PixelFormat ffmpeg_to_sdl3_pix_fmt(auto av_fmt) {
+        switch (av_fmt) {
+            // --- Planar YUV Formats (8-bit) ---
+            case AV_PIX_FMT_YUV420P:
+                return SDL_PIXELFORMAT_IYUV; // Also known as I420 (Y, U, V planes)
+            case AV_PIX_FMT_YUYV422:
+                return SDL_PIXELFORMAT_YUY2; // Packed YUV 4:2:2
+            case AV_PIX_FMT_UYVY422:
+                return SDL_PIXELFORMAT_UYVY; // Packed YUV 4:2:2 (reversed chroma/luma byte order)
+
+            // --- Semi-Planar YUV Formats (Hardware-friendly) ---
+            case AV_PIX_FMT_NV12:
+                return SDL_PIXELFORMAT_NV12; // Y plane + interleaved U/V plane
+            case AV_PIX_FMT_NV21:
+                return SDL_PIXELFORMAT_NV21; // Y plane + interleaved V/U plane
+
+            case AV_PIX_FMT_P010LE:
+                return SDL_PIXELFORMAT_P010;
+
+            // --- Unpacked RGB/RGBA Formats ---
+            case AV_PIX_FMT_RGB24:
+                return SDL_PIXELFORMAT_RGB24;
+            case AV_PIX_FMT_BGR24:
+                return SDL_PIXELFORMAT_BGR24;
+            case AV_PIX_FMT_RGBA:
+                return SDL_PIXELFORMAT_RGBA32;
+            case AV_PIX_FMT_BGRA:
+                return SDL_PIXELFORMAT_BGRA32;
+            case AV_PIX_FMT_ARGB:
+                return SDL_PIXELFORMAT_ARGB32;
+            case AV_PIX_FMT_ABGR:
+                return SDL_PIXELFORMAT_ABGR32;
+
+            // --- Packed RGB Formats ---
+            case AV_PIX_FMT_RGB565LE:
+                return SDL_PIXELFORMAT_RGB565;
+            case AV_PIX_FMT_BGR565LE:
+                return SDL_PIXELFORMAT_BGR565;
+
+            // --- Monochrome / Grayscale ---
+            case AV_PIX_FMT_GRAY8:
+                return SDL_PIXELFORMAT_INDEX8; // SDL doesn't have a direct "LUMA8" but INDEX8 works for raw 8-bit gray blits
+
+            // --- Unsupported Direct Maps ---
+            // (10-bit HDR formats, hardware surfaces like CUDA/VAAPI/DXVA2,
+            // and exotic formats must fallback to swscale or custom GPU shaders)
+            default:
+                return SDL_PIXELFORMAT_UNKNOWN;
+        }
+    }
+
+    void draw_texture2(AVFrame *frame) {
+        if (last_pixfmt != frame->format) {
+            last_pixfmt = frame->format;
+            SDL_Texture* tex = SDL_CreateTexture(
+                renderer.get(), 
+                ffmpeg_to_sdl3_pix_fmt(frame->format),
+                SDL_TEXTUREACCESS_STREAMING, 
+                frame->width, 
+                frame->height
+            );
+            texture.reset(tex);
+        }
+
+//        SDL_UpdateTexture(texture.get(), nullptr, frame->data[0], frame->linesize[0]);
+        SDL_UpdateNVTexture(texture.get(), nullptr, frame->data[0], frame->linesize[0], frame->data[1], frame->linesize[1]);
     }
 };

@@ -107,7 +107,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         auto video_frame = state->video_frame.load(std::memory_order_acquire);
         if (video_frame) {
 //            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
-            SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
+//            SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
+            state->draw_texture2(video_frame);
         }
 
         return SDL_APP_CONTINUE;

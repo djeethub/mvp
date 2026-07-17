@@ -175,9 +175,14 @@ public:
 
     bool open_video_decoder()
     {
+        init_vaapi_device();
         AVCodecParameters *codec_params = format_ctx->streams[video_stream_index]->codecpar;
         const AVCodec *codec = avcodec_find_decoder(codec_params->codec_id);
         video_codec_ctx = avcodec_alloc_context3(codec);
+        if (hw_device_ctx) {
+            video_codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+            video_codec_ctx->get_format = get_vaapi_format;
+        }
         avcodec_parameters_to_context(video_codec_ctx, codec_params);
         avcodec_open2(video_codec_ctx, codec, nullptr);
         video_time_base = get_video_time_base();
@@ -204,11 +209,12 @@ public:
         return true;
     }
 
-    bool setup_sws_context()
+    bool setup_sws_context(AVFrame *frame)
     {
+        sws_free_context(&sws_ctx);
         sws_ctx = sws_getContext(
-            video_codec_ctx->width, video_codec_ctx->height, video_codec_ctx->pix_fmt, // True source format
-            video_codec_ctx->width, video_codec_ctx->height, AV_PIX_FMT_NV12,       // True target format
+            frame->width, frame->height, static_cast<AVPixelFormat>(frame->format), // True source format
+            frame->width, frame->height, AV_PIX_FMT_NV12,       // True target format
             SWS_BILINEAR, nullptr, nullptr, nullptr);
         return sws_ctx != nullptr;
     }
@@ -247,14 +253,15 @@ public:
 
     template <typename VideoFeedFunc>
     void feed_video_frame(AVPacket *packet, VideoFeedFunc video_feed) {
+        if (!video_frame) video_frame = av_frame_alloc();
         if (avcodec_send_packet(video_codec_ctx, packet) >= 0)
         {
-            while (avcodec_receive_frame(video_codec_ctx, frame) >= 0)
+            while (avcodec_receive_frame(video_codec_ctx, video_frame) >= 0)
             {
-                if (frame->pts != AV_NOPTS_VALUE) {
-                    video_feed(frame);
+                if (video_frame->pts != AV_NOPTS_VALUE) {
+                    video_feed(video_frame);
                 }
-                av_frame_unref(frame);
+                av_frame_unref(video_frame);
             }
         }
     }
@@ -291,6 +298,9 @@ public:
 
     void scale_video_frame(AVFrame *frame, AVFrame *converted_frame)
     {
+        if (!sws_ctx || frame->format != sws_ctx->src_format) {
+            setup_sws_context(frame);
+        }
         sws_scale(sws_ctx, frame->data, frame->linesize, 0,
                   video_codec_ctx->height, converted_frame->data, converted_frame->linesize);
     }
@@ -325,11 +335,14 @@ public:
     }
 
     void close() {
-        swr_free(&swr_ctx);
         avcodec_free_context(&audio_codec_ctx);
         avcodec_free_context(&video_codec_ctx);
         avformat_close_input(&format_ctx);
         av_frame_free(&frame);
+        av_frame_free(&video_frame);
+        av_buffer_unref(&hw_device_ctx);
+        swr_free(&swr_ctx);
+        sws_free_context(&sws_ctx);
         audio_stream_index = -1;
         video_stream_index = -1;
         video_packet_queue.clear();
@@ -422,6 +435,35 @@ public:
         return static_cast<double>(format_ctx->start_time) * AV_TIME_BASE;
     }
 
+    static enum AVPixelFormat get_vaapi_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
+        const enum AVPixelFormat *p;
+
+        for (p = pix_fmts; *p != -1; p++) {
+            if (*p == AV_PIX_FMT_VAAPI) {
+                return *p;
+            }
+        }
+
+        std::cerr << "Failed to get HW surface format.\n";
+        return AV_PIX_FMT_NONE;
+    }
+
+    int init_vaapi_device() {
+        // This looks up the default DRI device (e.g., /dev/dri/renderD128)
+        int err = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0);
+        if (err < 0) {
+            std::cerr << "Failed to create VA-API hardware device.\n";
+            return err;
+        }
+        return 0;
+    }
+
+    void print_error_str(int err) {
+        char err_buf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(err, err_buf, sizeof(err_buf));
+        printf("%i: %s\n", err, err_buf);
+    }
+
 private:
     AVFormatContext* format_ctx = nullptr;
     AVCodecContext* audio_codec_ctx = nullptr;
@@ -434,6 +476,8 @@ private:
 
     AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
+    AVFrame* video_frame = nullptr;
+    AVBufferRef *hw_device_ctx = NULL;
     double duration;
 
 public:

@@ -68,7 +68,17 @@ public:
             frame_queue.clear();
             video->feed_video_frame(packet, [&](AVFrame *frame){
                 auto new_frame = frame_queue.alloc();
-                av_frame_ref(new_frame, frame);
+                if (frame->hw_frames_ctx) {
+                    new_frame->format = AV_PIX_FMT_NV12;
+                    av_hwframe_transfer_data(new_frame, frame, 0);
+                    new_frame->pts = frame->pts;
+                    new_frame->duration = frame->duration;
+/*                    if (av_hwframe_map(new_frame, frame, AV_HWFRAME_MAP_READ) < 0) {
+                        fprintf(stderr, "Mapping to DRM PRIME failed!\n");
+                        av_frame_free(&new_frame);
+                    }*/
+                } else
+                    av_frame_ref(new_frame, frame);
                 frame_queue.push(new_frame);
             });
             av_packet_free(&packet);
