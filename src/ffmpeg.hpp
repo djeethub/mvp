@@ -246,6 +246,7 @@ public:
         subtitle_codec_ctx = avcodec_alloc_context3(codec);
         avcodec_parameters_to_context(subtitle_codec_ctx, codec_params);
         avcodec_open2(subtitle_codec_ctx, codec, nullptr);
+        subtitle_time_base = av_q2d(format_ctx->streams[subtitle_stream_idx]->time_base);
         return true;
     }
 
@@ -312,7 +313,7 @@ public:
             // avcodec_decode_subtitle2 is old but still the standard way to handle subtitles in modern FFmpeg
             if (avcodec_decode_subtitle2(subtitle_codec_ctx, &subtitle, &got_subtitle, packet) >= 0) {
                 if (got_subtitle) {
-                    subtitle_feed(subtitle);
+                    subtitle_feed(subtitle, packet);
                     // Free the allocated subtitle struct memory
                     avsubtitle_free(&subtitle);
                 }
@@ -562,6 +563,7 @@ private:
 public:
     double video_time_base = 0.0;
     double audio_time_base = 0.0;
+    double subtitle_time_base = 0.0;
     PacketQueue video_packet_queue;
 #ifdef _VIDEO_CONVERTER_THREAD_
     FrameQueue video_frame_queue;

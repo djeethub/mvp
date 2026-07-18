@@ -24,7 +24,7 @@
 
 // Define a unique event ID for our frame ticker
 #define USEREVENT_NEXT_FRAME (SDL_EVENT_USER + 1)
-#define USEREVENT_DECODE_TICK (SDL_EVENT_USER + 2)
+#define USEREVENT_SUBTITLE (SDL_EVENT_USER + 2)
 #define USEREVENT_QUIT (SDL_EVENT_USER + 3)
 
 namespace fs = std::filesystem;
@@ -35,6 +35,11 @@ using TexturePtr = std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)>;
 using AudioStream = std::unique_ptr<SDL_AudioStream, decltype(&SDL_DestroyAudioStream)>;
 
 uint32_t SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, uint32_t interval);
+
+struct Subtitle {
+    std::string text;
+    double duration;
+};
 
 struct AppState {
     std::vector<std::string> image_files;
@@ -50,6 +55,7 @@ struct AppState {
 
     ff::VideoFile video;
     std::atomic<AVFrame *> video_frame;
+    std::atomic<std::shared_ptr<Subtitle>> subtitle;
     ff::AudioBuffer audio_buf;
     double tick_diff = 0;
     int64_t last_video_pts = SDL_MAX_SINT64;
@@ -278,13 +284,32 @@ struct AppState {
             }
         }
 
+        std::string str;
         // If we successfully skipped 8 commas, slice out the remaining string
         if (comma_count == 8 && pos < line.length()) {
-            return line.substr(pos);
+            str = line.substr(pos);
+
+            std::string to_find = "\\N";
+            pos = str.find(to_find);
+            while ((pos = str.find(to_find)) != std::string::npos) {
+                str.erase(pos, to_find.length());
+            }
+            return str;
         }
 
         return line; // Fallback if string is unexpected or malformed
-    }    
+    }
+
+    void set_subtitle(const std::string& text, double duration) {
+        auto data = std::make_shared<Subtitle>();
+        data->text = text;
+        data->duration = duration;
+        AppState::subtitle.store(data, std::memory_order_release);
+        SDL_Event event;
+        SDL_zero(event);
+        event.type = USEREVENT_SUBTITLE;
+        SDL_PushEvent(&event);
+    }
 
     int read_next_frame(double play_time) {
         int read_result = 0;
@@ -319,18 +344,17 @@ struct AppState {
                     video.video_packet_queue.push(new_packet);
                 }
                 video_converter.cv_.notify_one();
-            }, [&](AVSubtitle& subtitle){
+            }, [&](AVSubtitle& subtitle, AVPacket *packet){
                 // Iterate through the subtitle rectangles (lines/images)
                 for (unsigned int i = 0; i < subtitle.num_rects; i++) {
                     AVSubtitleRect* rect = subtitle.rects[i];
-                    
                     if (rect->type == SUBTITLE_TEXT && rect->text) {
-                        std::cout << "[" << subtitle.start_display_time << "ms] " << rect->text << "\n";
+                        set_subtitle(rect->text, packet->duration * video.subtitle_time_base);
                     } 
                     else if (rect->type == SUBTITLE_ASS && rect->ass) {
                         // ASS subtitles contain formatting markers (e.g., {\an8}) alongside text
 //                        std::cout << "<" << subtitle.start_display_time << "ms> " << rect->ass << "\n";
-                        std::cout << extract_dialogue_ass(rect->ass) << "\n";
+                        set_subtitle(extract_dialogue_ass(rect->ass), packet->duration * video.subtitle_time_base);
                     }
                 }
             });

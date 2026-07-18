@@ -85,10 +85,12 @@ class AppGui {
             // Arguments: (Filepath, Font Size in pixels, Config Struct, Glyph Ranges)
             uiFont  = io.Fonts->AddFontFromFileTTF("/usr/share/fonts/open-sans/OpenSans-Regular.ttf", 16.0f);
             osdFont = io.Fonts->AddFontFromFileTTF("/usr/share/fonts/open-sans/OpenSans-Bold.ttf", 32.0f);
+            subtitleFont = io.Fonts->AddFontFromFileTTF("/usr/share/fonts/open-sans/OpenSans-Bold.ttf", 52.0f);
 
             // 4. Fallback safeguard: If files are missing, default back to ProggyClean safely
             if (uiFont == nullptr)  uiFont  = io.Fonts->AddFontDefault();
             if (osdFont == nullptr) osdFont = io.Fonts->AddFontDefault();            
+            if (subtitleFont == nullptr) subtitleFont = io.Fonts->AddFontDefault();            
 
             // Setup Platform/Renderer Backends
             ImGui_ImplSDL3_InitForSDLRenderer(state->window.get(), state->renderer.get());
@@ -107,6 +109,11 @@ class AppGui {
 
             // Overlay the pristine main text inside the middle slot
             draw_list->AddText(font, font_size, screen_pos, text_color, text);
+        }        
+
+        void DrawTextWithShadow(ImDrawList* draw_list, ImFont* font, float font_size, ImVec2 screen_pos, const char* text, ImU32 text_color, ImU32 outline_color, float stroke_thickness, float wrap_width) {
+            draw_list->AddText(font, font_size, ImVec2(screen_pos.x + stroke_thickness, screen_pos.y + stroke_thickness), outline_color, text, nullptr, wrap_width);
+            draw_list->AddText(font, font_size, screen_pos, text_color, text, nullptr, wrap_width);
         }        
 
         SDL_AppResult draw()
@@ -128,12 +135,35 @@ class AppGui {
                 DrawTextWithOutline(
                     draw_list, 
                     ImGui::GetFont(), 
-                    ImGui::GetFontSize() * 1, // Scaled slightly larger for OSD
+                    ImGui::GetFontSize(), // Scaled slightly larger for OSD
                     osd_pos, 
                     noti_text.c_str(), 
                     IM_COL32(255, 255, 255, 255), // Pure White Text
                     IM_COL32(0, 0, 0, 200),       // Soft Transparent Black Outline
                     1.5f                          // 1.5-pixel outline stroke thickness
+                );
+                ImGui::PopFont();
+            }
+
+            if (subtitle_expires_at > curr_ticks)
+            {
+                ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
+                ImGui::PushFont(subtitleFont);
+                ImVec2 text_size = ImGui::CalcTextSize(subtitle.c_str(), NULL, false, io.DisplaySize.x * 0.9);
+                ImVec2 pos = ImVec2(
+                        (io.DisplaySize.x - text_size.x) * 0.5f,           // center X
+                        io.DisplaySize.y - text_size.y - io.DisplaySize.y * 0.08             // bottom with padding
+                    );                
+
+                DrawTextWithShadow(
+                    draw_list, 
+                    ImGui::GetFont(), 
+                    ImGui::GetFontSize(),
+                    pos, 
+                    subtitle.c_str(), 
+                    IM_COL32(255, 255, 255, 255),
+                    IM_COL32(0, 0, 0, 200),
+                    2, text_size.x
                 );
                 ImGui::PopFont();
             }
@@ -203,11 +233,20 @@ class AppGui {
             text_expires_at = SDL_GetTicks() + duration_ms;
         }
 
+        void show_subtitle(const std::string &message, uint64_t duration_ms = 2000)
+        {
+            subtitle = message;
+            subtitle_expires_at = SDL_GetTicks() + duration_ms;
+        }
+
     private:
         AppState *state = nullptr;
-        std::string noti_text = "";
+        std::string noti_text;
         uint64_t text_expires_at = 0; // Expiration time in SDL ticks (milliseconds)
+        std::string subtitle;
+        uint64_t subtitle_expires_at = 0;
         uint64_t slider_expires_at = 0;
         ImFont* osdFont = nullptr;
         ImFont* uiFont  = nullptr;
+        ImFont* subtitleFont  = nullptr;
 };
