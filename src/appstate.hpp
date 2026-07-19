@@ -67,6 +67,7 @@ struct AppState {
     float video_pan_y = 0.0;
     bool is_loop = true;
     bool is_looping = false;
+    bool is_seeking = false;
     std::mutex fetch_mutex;
     std::condition_variable fetch_cv;
     int fetch_status = 0;   // 0 = running, 1 = reset, -1 = shutdown
@@ -375,6 +376,13 @@ struct AppState {
                 {
                     auto frame = video.video_frame_queue.front();
                     auto frame_time = frame->pts * video.video_time_base;
+                    if (is_seeking) {
+                        if (frame_time + tick_diff < curr_ticks) {
+                            video.video_frame_queue.pop();
+                            continue;
+                        } else
+                            is_seeking = false;
+                    }
                     if (is_looping || frame_time + tick_diff <= curr_ticks) {
 //                        printf("pts: %i\n", frame->pts);
                         if (frame->pts < last_video_pts) {
@@ -446,7 +454,7 @@ struct AppState {
                             if (frame && frame->duration > 0)
                                 return frame->duration * video.video_time_base;
                             else
-                                return 0.02;
+                                return 0.001;
                         }
                     }
                 }
@@ -458,10 +466,12 @@ struct AppState {
 #endif
                 return 0; // Stop the timer if no more frames are available
             }
+            if (is_seeking)
+                return 0.001;
             curr_ticks = get_ticks();
             curr_ticks -= tick_diff;
 #ifdef _VIDEO_CONVERTER_THREAD_
-            auto frame_time = video_converter.next_play_time(curr_ticks);
+            auto frame_time = video_converter.next_play_time();
 #else
             auto frame_time = video.video_converted_queue.front()->pts * video.video_time_base;
 #endif
@@ -484,27 +494,26 @@ struct AppState {
     }
 
     bool seek(double ts, bool reset) {
-        auto rlt = false;
         if (reset)
         {
             {
                 std::lock_guard<std::mutex> lock(fetch_mutex);
                 if (video.seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0)
                 {
+                    is_seeking = true;
                     recycle_frame_buffers();
                     set_play_time(ts);
                     read_next_frame(ts);
                     fetch_status = 1;
-                    rlt = true;
                 }
             }
-            if (rlt)
+            if (is_seeking)
                 fetch_cv.notify_one();
         } else if (video.seek(ts) >= 0)
         {
-            rlt = true;
+            return true;
         }
-        return rlt;
+        return false;
     }
 
     bool seek_relative(double t) {

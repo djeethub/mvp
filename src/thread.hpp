@@ -102,7 +102,7 @@ public:
         return pts <= pts_undefined && video->video_frame_queue.empty() && video->video_packet_queue.empty();
     }
 
-    double next_play_time(double play_time) {
+    double next_play_time() {
         std::lock_guard<std::mutex> lock(mtx_);
         if (!video->video_frame_queue.empty()) {
             return video->video_frame_queue.front()->pts * video->video_time_base;
