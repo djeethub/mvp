@@ -21,10 +21,12 @@
 #ifdef _VIDEO_CONVERTER_THREAD_
 #include "thread.hpp"
 #endif
+#include "ass.hpp"
 
 // Define a unique event ID for our frame ticker
 #define USEREVENT_NEXT_FRAME (SDL_EVENT_USER + 1)
 #define USEREVENT_SUBTITLE (SDL_EVENT_USER + 2)
+#define USEREVENT_SUBTITLE_ASS (SDL_EVENT_USER + 4)
 #define USEREVENT_QUIT (SDL_EVENT_USER + 3)
 
 namespace fs = std::filesystem;
@@ -38,6 +40,7 @@ uint32_t SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, uint32_t int
 
 struct Subtitle {
     std::string text;
+    double pts;
     double duration;
 };
 
@@ -78,6 +81,7 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
     VideoConverter video_converter;
 #endif
+    AssHandler ass;
 
     AppState() {
 #ifdef _VIDEO_CONVERTER_THREAD_
@@ -106,6 +110,7 @@ struct AppState {
             video.video_converted_queue.clear();
 #endif
         }
+        ass.flush();
     }
 
     void recycle_frame_buffers()
@@ -120,6 +125,7 @@ struct AppState {
         }
         if (audio_stream)
             SDL_ClearAudioStream(audio_stream.get());
+        ass.flush();
     }
 
     void reset_runtime_state() {
@@ -252,6 +258,9 @@ struct AppState {
         }
 
         chapter_list = video.ReadChapters();
+        auto subtitle_ctx = video.get_subtitle_ctx();
+        if (subtitle_ctx)
+            ass.init(img_w, img_h, subtitle_ctx);
 
         image_aspect = img_h > 0 ? static_cast<float>(img_w) / img_h : 1.0f;
         resize_window();
@@ -301,14 +310,15 @@ struct AppState {
         return line; // Fallback if string is unexpected or malformed
     }
 
-    void set_subtitle(const std::string& text, double duration) {
+    void set_subtitle(const std::string& text, AVPacket *packet) {
         auto data = std::make_shared<Subtitle>();
         data->text = text;
-        data->duration = duration;
+        data->pts = packet->pts * video.subtitle_time_base;
+        data->duration = packet->duration * video.subtitle_time_base;
         AppState::subtitle.store(data, std::memory_order_release);
         SDL_Event event;
         SDL_zero(event);
-        event.type = USEREVENT_SUBTITLE;
+        event.type = USEREVENT_SUBTITLE_ASS;
         SDL_PushEvent(&event);
     }
 
@@ -350,12 +360,14 @@ struct AppState {
                 for (unsigned int i = 0; i < subtitle.num_rects; i++) {
                     AVSubtitleRect* rect = subtitle.rects[i];
                     if (rect->type == SUBTITLE_TEXT && rect->text) {
-                        set_subtitle(rect->text, packet->duration * video.subtitle_time_base);
+                        set_subtitle(rect->text, packet);
                     } 
                     else if (rect->type == SUBTITLE_ASS && rect->ass) {
                         // ASS subtitles contain formatting markers (e.g., {\an8}) alongside text
 //                        std::cout << "<" << subtitle.start_display_time << "ms> " << rect->ass << "\n";
-                        set_subtitle(extract_dialogue_ass(rect->ass), packet->duration * video.subtitle_time_base);
+//                        set_subtitle(extract_dialogue_ass(rect->ass), packet->duration * video.subtitle_time_base);
+//                        ass.add_ass(rect, packet->pts * video.subtitle_time_base * 1000, packet->duration * video.subtitle_time_base * 1000);
+                        set_subtitle(rect->ass, packet);
                     }
                 }
             });
@@ -757,5 +769,9 @@ struct AppState {
 
 //        SDL_UpdateTexture(texture.get(), nullptr, frame->data[0], frame->linesize[0]);
         SDL_UpdateNVTexture(texture.get(), nullptr, frame->data[0], frame->linesize[0], frame->data[1], frame->linesize[1]);
+    }
+
+    void draw_ass() {
+        ass.draw(renderer.get(), get_play_time());
     }
 };

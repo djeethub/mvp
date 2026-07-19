@@ -540,6 +540,10 @@ public:
         printf("%i: %s\n", err, err_buf);
     }
 
+    AVCodecContext *get_subtitle_ctx() {
+        return subtitle_codec_ctx;
+    }
+
 private:
     AVFormatContext* format_ctx = nullptr;
     AVCodecContext* audio_codec_ctx = nullptr;

@@ -96,6 +96,15 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         }
             break;
 
+        case USEREVENT_SUBTITLE_ASS:
+        {
+            auto subtitle = state->subtitle.load(std::memory_order_acquire);
+            if (subtitle) {
+                state->ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
+            }
+        }
+            break;
+
         case SDL_EVENT_QUIT:
             return SDL_APP_SUCCESS;
 
@@ -253,6 +262,8 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
     if (state->texture) {
         SDL_RenderTexture(state->renderer.get(), state->texture.get(), NULL, &dst_rect);
     }
+
+    state->draw_ass();
 
     auto app_result = gui.draw();
     if (app_result != SDL_APP_CONTINUE)
