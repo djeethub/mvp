@@ -251,6 +251,8 @@ public:
             video_codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
             video_codec_ctx->get_format = get_vaapi_format;
         }
+        video_codec_ctx->thread_count = 0; 
+        video_codec_ctx->thread_type = FF_THREAD_FRAME; // Or FF_THREAD_SLICE
         avcodec_parameters_to_context(video_codec_ctx, codec_params);
         avcodec_open2(video_codec_ctx, codec, nullptr);
         video_time_base = get_video_time_base();
@@ -304,7 +306,7 @@ public:
         if (!frame) frame = av_frame_alloc();
 
         auto read_result = av_read_frame(format_ctx, packet);
-        if (read_result < 0)
+        if (read_result < 0 && read_result != AVERROR_EOF)
             return read_result;
 
         if (packet->stream_index == audio_stream_index)
