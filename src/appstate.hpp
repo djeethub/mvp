@@ -16,7 +16,6 @@
 #include <mutex>
 #include <condition_variable>
 
-#include "utils.hpp"
 #include "ffmpeg.hpp"
 #ifdef _VIDEO_CONVERTER_THREAD_
 #include "thread.hpp"
@@ -390,6 +389,7 @@ struct AppState {
                     if (is_seeking) {
                         if (frame_time + tick_diff < curr_ticks) {
                             video.video_frame_queue.pop();
+                            av_frame_free(&frame);
                             need_fetch = true;
                             continue;
                         } else {
