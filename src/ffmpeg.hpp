@@ -243,7 +243,7 @@ public:
 
     bool open_video_decoder()
     {
-        init_vaapi_device();
+//        init_vaapi_device();
         AVCodecParameters *codec_params = format_ctx->streams[video_stream_index]->codecpar;
         const AVCodec *codec = avcodec_find_decoder(codec_params->codec_id);
         video_codec_ctx = avcodec_alloc_context3(codec);
@@ -307,7 +307,6 @@ public:
         if (read_result < 0)
             return read_result;
 
-        // Is this data slice an audio packet?
         if (packet->stream_index == audio_stream_index)
         {
             if (avcodec_send_packet(audio_codec_ctx, packet) >= 0)
@@ -437,7 +436,6 @@ public:
         audio_stream_index = -1;
         video_stream_index = -1;
         subtitle_stream_idx = -1;
-        video_packet_queue.clear();
         av_buffer_pool_uninit(&converted_pool);
         subtitles.clear();
     }
@@ -475,7 +473,7 @@ public:
         int seek_result = avformat_seek_file(
                 format_ctx,
                 -1,
-                INT64_MIN, ts, ts,
+                INT64_MIN, ts, INT64_MAX,
                 AVSEEK_FLAG_BACKWARD);
         if (seek_result >= 0) {
             if (audio_codec_ctx)
@@ -587,10 +585,10 @@ public:
     double video_time_base = 0.0;
     double audio_time_base = 0.0;
     double subtitle_time_base = 0.0;
-    PacketQueue video_packet_queue;
 #ifdef _VIDEO_CONVERTER_THREAD_
-    FrameQueue video_frame_queue;
+    PacketQueue video_packet_queue;
 #endif
+    FrameQueue video_frame_queue;
     AVBufferPool *converted_pool = nullptr;
 };
 } // namespace ff

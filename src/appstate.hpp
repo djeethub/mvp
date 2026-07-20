@@ -1,6 +1,6 @@
 #pragma once
 
-#define _VIDEO_CONVERTER_THREAD_
+//#define _VIDEO_CONVERTER_THREAD_
 
 #include <string>
 #include <vector>
@@ -69,6 +69,7 @@ struct AppState {
     bool is_loop = true;
     bool is_looping = false;
     bool is_seeking = false;
+    double seek_time;
     std::mutex fetch_mutex;
     std::condition_variable fetch_cv;
     int fetch_status = 0;   // 0 = running, 1 = reset, -1 = shutdown
@@ -100,27 +101,21 @@ struct AppState {
     }
 
     void clear_frame_buffers() {
-        video_frame = nullptr;
-        {
 #ifdef _VIDEO_CONVERTER_THREAD_
-            video_converter.clear();
+        video_converter.clear();
 #else
-            video.video_converted_queue.clear();
+        video.video_frame_queue.clear();
 #endif
-        }
         ass.flush();
     }
 
     void recycle_frame_buffers()
     {
-        video_frame = nullptr;
-        {
 #ifdef _VIDEO_CONVERTER_THREAD_
-            video_converter.clear();
+        video_converter.clear();
 #else
-            video.video_converted_queue.recycle(false);
+        video.video_frame_queue.clear();
 #endif
-        }
         if (audio_stream)
             SDL_ClearAudioStream(audio_stream.get());
         ass.flush();
@@ -325,7 +320,7 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
             auto video_frame_count = video_converter.count_video_packet();
 #else
-            auto video_frame_count = video.video_converted_queue.size();
+            auto video_frame_count = video.video_frame_queue.size();
 #endif
             if (video_frame_count >= 2 && (!audio_stream || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
                 break;
@@ -345,13 +340,31 @@ struct AppState {
 //                    printf("SDL_GetAudioStreamQueued: %i\n", SDL_GetAudioStreamQueued(audio_stream.get()));
                 }
             }, [&](AVPacket *packet) -> void {
+#ifdef _VIDEO_CONVERTER_THREAD_
                 {
+                    auto new_packet = av_packet_alloc();
+                    av_packet_move_ref(new_packet, packet);
                     std::lock_guard<std::mutex> lock(video_converter.mtx_);
-                    auto new_packet = video.video_packet_queue.alloc();
-                    av_packet_ref(new_packet, packet);
                     video.video_packet_queue.push(new_packet);
                 }
                 video_converter.cv_.notify_one();
+#else
+                video.feed_video_frame(packet, [&](AVFrame *frame){
+                    auto new_frame = video.video_frame_queue.alloc();
+                    if (frame->hw_frames_ctx) {
+                        new_frame->format = AV_PIX_FMT_NV12;
+                        av_hwframe_transfer_data(new_frame, frame, 0);
+                        new_frame->pts = frame->pts;
+                        new_frame->duration = frame->duration;
+    /*                    if (av_hwframe_map(new_frame, frame, AV_HWFRAME_MAP_READ) < 0) {
+                            fprintf(stderr, "Mapping to DRM PRIME failed!\n");
+                            av_frame_free(&new_frame);
+                        }*/
+                    } else
+                        av_frame_ref(new_frame, frame);
+                    video.video_frame_queue.push(new_frame);
+                });
+#endif
             }, [&](AVSubtitle& subtitle, AVPacket *packet){
                 // Iterate through the subtitle rectangles (lines/images)
                 for (unsigned int i = 0; i < subtitle.num_rects; i++) {
@@ -387,7 +400,7 @@ struct AppState {
                     auto frame = video.video_frame_queue.front();
                     auto frame_time = frame->pts * video.video_time_base;
                     if (is_seeking) {
-                        if (frame_time + tick_diff < curr_ticks) {
+                        if (frame_time < seek_time) {
                             video.video_frame_queue.pop();
                             av_frame_free(&frame);
                             need_fetch = true;
@@ -413,8 +426,10 @@ struct AppState {
                         break;
                 }
             }
+#ifdef _VIDEO_CONVERTER_THREAD_
             if (need_fetch)
                 video_converter.cv_.notify_one();
+#endif
             if (frame_to_display)
             {
                 if (frame_to_display->format == AV_PIX_FMT_NV12) {
@@ -454,7 +469,7 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
                     if (is_loop && video_converter.empty()) {
 #else
-                    if (is_loop && video.video_converted_queue.empty()) {
+                    if (is_loop && video.video_frame_queue.empty()) {
 #endif
                         if (seek(video.get_start_time(), false)) {
                             is_looping = true;
@@ -476,7 +491,7 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
             if (video_converter.empty()) {
 #else
-            if (video.video_converted_queue.empty()) {
+            if (video.video_frame_queue.empty()) {
 #endif
                 return 0; // Stop the timer if no more frames are available
             }
@@ -487,7 +502,7 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
             auto frame_time = video_converter.next_play_time();
 #else
-            auto frame_time = video.video_converted_queue.front()->pts * video.video_time_base;
+            auto frame_time = video.video_frame_queue.front()->pts * video.video_time_base;
 #endif
             interval = frame_time - curr_ticks;
 //            printf("interval: %f\n", interval);
@@ -508,6 +523,8 @@ struct AppState {
     }
 
     bool seek(double ts, bool reset) {
+        if (is_seeking)
+            return false;
         if (reset)
         {
             {
@@ -515,6 +532,7 @@ struct AppState {
                 if (video.seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0)
                 {
                     is_seeking = true;
+                    seek_time = ts;
                     recycle_frame_buffers();
                     set_play_time(ts);
                     read_next_frame(ts);
