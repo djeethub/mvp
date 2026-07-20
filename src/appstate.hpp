@@ -49,7 +49,6 @@ struct AppState {
     std::size_t current_index = 0;
     std::string parent_dir;
     bool trigger_context_menu = false;
-    float image_aspect = 1.0f;
 
     WindowPtr window{nullptr, SDL_DestroyWindow};
     RendererPtr renderer{nullptr, SDL_DestroyRenderer};
@@ -262,7 +261,6 @@ struct AppState {
         if (subtitle_ctx)
             ass.init(img_w, img_h, subtitle_ctx);
 
-        image_aspect = img_h > 0 ? static_cast<float>(img_w) / img_h : 1.0f;
         resize_window();
         SDL_SetWindowTitle(window.get(), filename.c_str());
 
@@ -380,6 +378,7 @@ struct AppState {
     bool check_next_frame(double curr_ticks) {
         if (video.is_video()) {
             AVFrame *frame_to_display = nullptr;
+            bool need_fetch = false;
             {
 #ifdef _VIDEO_CONVERTER_THREAD_
                 std::lock_guard<std::mutex> lock(video_converter.mtx_);
@@ -391,9 +390,12 @@ struct AppState {
                     if (is_seeking) {
                         if (frame_time + tick_diff < curr_ticks) {
                             video.video_frame_queue.pop();
+                            need_fetch = true;
                             continue;
-                        } else
+                        } else {
+                            last_video_pts = frame->pts;
                             is_seeking = false;
+                        }
                     }
                     if (is_looping || frame_time + tick_diff <= curr_ticks) {
 //                        printf("pts: %i\n", frame->pts);
@@ -406,15 +408,15 @@ struct AppState {
                             av_frame_free(&frame_to_display);
                         frame_to_display = frame;
                         video.video_frame_queue.pop();
+                        need_fetch = true;
                     } else
                         break;
                 }
             }
+            if (need_fetch)
+                video_converter.cv_.notify_one();
             if (frame_to_display)
             {
-#ifdef _VIDEO_CONVERTER_THREAD_
-                video_converter.cv_.notify_one();
-#endif
                 if (frame_to_display->format == AV_PIX_FMT_NV12) {
                     auto old_frame = video_frame.exchange(frame_to_display, std::memory_order_release);
                     av_frame_free(&old_frame);

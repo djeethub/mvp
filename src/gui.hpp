@@ -111,7 +111,7 @@ class AppGui {
             draw_list->AddText(font, font_size, screen_pos, text_color, text);
         }        
 
-        void DrawTextWithShadow(ImDrawList* draw_list, ImFont* font, float font_size, ImVec2 screen_pos, const char* text, ImU32 text_color, ImU32 outline_color, float stroke_thickness, float wrap_width) {
+        void DrawTextWithShadow(ImDrawList* draw_list, ImFont* font, float font_size, ImVec2 screen_pos, const char* text, ImU32 text_color, ImU32 outline_color, float stroke_thickness, float wrap_width = -1.0f) {
             draw_list->AddText(font, font_size, ImVec2(screen_pos.x + stroke_thickness, screen_pos.y + stroke_thickness), outline_color, text, nullptr, wrap_width);
             draw_list->AddText(font, font_size, screen_pos, text_color, text, nullptr, wrap_width);
         }        
@@ -132,7 +132,7 @@ class AppGui {
                 ImVec2 osd_pos = ImVec2(20.0f, 20.0f); // Top left screen alignment
 //                ImGui::Text(noti_text.c_str());
                 ImGui::PushFont(osdFont);
-                DrawTextWithOutline(
+                DrawTextWithShadow(
                     draw_list, 
                     ImGui::GetFont(), 
                     ImGui::GetFontSize(), // Scaled slightly larger for OSD
@@ -140,7 +140,7 @@ class AppGui {
                     noti_text.c_str(), 
                     IM_COL32(255, 255, 255, 255), // Pure White Text
                     IM_COL32(0, 0, 0, 200),       // Soft Transparent Black Outline
-                    1.5f                          // 1.5-pixel outline stroke thickness
+                    1.8f                          // outline stroke thickness
                 );
                 ImGui::PopFont();
             }
