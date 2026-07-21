@@ -64,7 +64,7 @@ public:
 //            printf("SUCCESS: libass generated image chunks! w=%d, h=%d at position x=%d, y=%d\n", img->w, img->h, img->dst_x, img->dst_y);
             if (img->w > 0 && img->h > 0) {
                 // 1. Create your texture
-                if (!sub_texture || sub_texture.get()->w < img->w || sub_texture.get()->h < img->h)
+                if (!sub_texture || sub_texture->w < img->w || sub_texture->h < img->h)
                     sub_texture.reset(SDL_CreateTexture(
                         renderer, 
                         SDL_PIXELFORMAT_RGBA8888, 

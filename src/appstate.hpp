@@ -127,14 +127,12 @@ struct AppState {
             audio_device_id = 0;
         }
         audio_stream.reset();
-        texture.reset();
         video.close();
         clear_frame_buffers();
         last_video_pts = SDL_MAX_SINT64;
         last_audio_pts = SDL_MAX_SINT64;
         is_looping = false;
         last_pixfmt = AV_PIX_FMT_NONE;
-        texture.reset(nullptr);
     }
 
     bool shutdown() {
@@ -255,8 +253,10 @@ struct AppState {
         if (subtitle_ctx)
             ass.init(img_w, img_h, subtitle_ctx);
 
+        SDL_HideWindow(window.get());
         resize_window();
         SDL_SetWindowTitle(window.get(), filename.c_str());
+        SDL_ShowWindow(window.get());
 
         fetch_status = 1;
         if (!fetch_thread.joinable()) {
@@ -322,7 +322,7 @@ struct AppState {
 #else
             auto video_frame_count = video.video_frame_queue.size();
 #endif
-            if (video_frame_count >= 2 && (!audio_stream || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
+            if (video_frame_count >= 1 && (!audio_stream || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
                 break;
             read_result = video.feed_frame([&](AVFrame *frame) -> void {
                 if (audio_stream) {
@@ -361,7 +361,7 @@ struct AppState {
                             av_frame_free(&new_frame);
                         }*/
                     } else
-                        av_frame_ref(new_frame, frame);
+                        av_frame_move_ref(new_frame, frame);
                     video.video_frame_queue.push(new_frame);
                 });
 #endif
@@ -622,7 +622,7 @@ struct AppState {
     }
 
     double get_play_time() const {
-        return get_ticks() - tick_diff;
+        return (is_paused ? pause_time : get_ticks()) - tick_diff;
     }
 
     void resize_window(float window_scale = 1.0) {
@@ -677,18 +677,18 @@ struct AppState {
             {
                 std::lock_guard<std::mutex> lock(fetch_mutex);
                 is_paused = false;
-                fetch_status = 2;
                 tick_diff += get_ticks() - pause_time;
-                SDL_ResumeAudioStreamDevice(audio_stream.get());
+                fetch_status = 2;
             }
             fetch_cv.notify_one();
+            SDL_ResumeAudioStreamDevice(audio_stream.get());
         }
         else
         {
             std::lock_guard<std::mutex> lock(fetch_mutex);
             SDL_PauseAudioStreamDevice(audio_stream.get());
-            pause_time = get_ticks();
             is_paused = true;
+            pause_time = get_ticks();
         }
     }
 

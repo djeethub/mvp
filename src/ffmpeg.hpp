@@ -43,6 +43,13 @@ struct AudioBuffer {
     }
 };
 
+struct Subtitle {
+    int idx;
+    std::string lang;
+    std::string title;
+    AVCodecID codec_id;
+};
+
 template <typename DataPtr, DataPtr (*AllocFunc)(), void (*FreeFunc)(DataPtr*)>
 struct AvQueue {
     std::queue<DataPtr> queue;
@@ -101,13 +108,6 @@ struct AvQueue {
     auto empty() {
         return queue.empty();
     }
-};
-
-struct Subtitle {
-    int idx;
-    std::string lang;
-    std::string title;
-    AVCodecID codec_id;
 };
 
 typedef AvQueue<AVPacket *, av_packet_alloc, av_packet_free> PacketQueue;
@@ -189,7 +189,7 @@ public:
 
     bool find_audio_stream()
     {
-        for (const auto& val : sub_lang_pref) {
+        for (const auto& val : audio_lang_pref) {
             for (unsigned int i = 0; i < format_ctx->nb_streams; i++) {
                 auto stream = format_ctx->streams[i];
                 if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {

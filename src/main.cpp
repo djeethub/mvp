@@ -264,13 +264,9 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
     }
 
     state->draw_ass();
-
     auto app_result = gui.draw();
-    if (app_result != SDL_APP_CONTINUE)
-        return app_result;
-
     SDL_RenderPresent(state->renderer.get());
-    return SDL_APP_CONTINUE;
+    return app_result;
 }
 
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
