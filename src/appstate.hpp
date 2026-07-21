@@ -76,7 +76,6 @@ struct AppState {
     std::vector<ff::ChapterData> chapter_list;
     double pause_time;
     bool is_paused = false;
-    int last_pixfmt = AV_PIX_FMT_NONE;
 #ifdef _VIDEO_CONVERTER_THREAD_
     VideoConverter video_converter;
 #endif
@@ -132,7 +131,6 @@ struct AppState {
         last_video_pts = SDL_MAX_SINT64;
         last_audio_pts = SDL_MAX_SINT64;
         is_looping = false;
-        last_pixfmt = AV_PIX_FMT_NONE;
     }
 
     bool shutdown() {
@@ -253,10 +251,9 @@ struct AppState {
         if (subtitle_ctx)
             ass.init(img_w, img_h, subtitle_ctx);
 
-        SDL_HideWindow(window.get());
+        
         resize_window();
         SDL_SetWindowTitle(window.get(), filename.c_str());
-        SDL_ShowWindow(window.get());
 
         fetch_status = 1;
         if (!fetch_thread.joinable()) {
@@ -677,8 +674,8 @@ struct AppState {
             {
                 std::lock_guard<std::mutex> lock(fetch_mutex);
                 is_paused = false;
-                tick_diff += get_ticks() - pause_time;
                 fetch_status = 2;
+                tick_diff += get_ticks() - pause_time;
             }
             fetch_cv.notify_one();
             SDL_ResumeAudioStreamDevice(audio_stream.get());
@@ -687,8 +684,8 @@ struct AppState {
         {
             std::lock_guard<std::mutex> lock(fetch_mutex);
             SDL_PauseAudioStreamDevice(audio_stream.get());
-            is_paused = true;
             pause_time = get_ticks();
+            is_paused = true;
         }
     }
 
@@ -775,11 +772,11 @@ struct AppState {
     }
 
     void draw_texture2(AVFrame *frame) {
-        if (last_pixfmt != frame->format) {
-            last_pixfmt = frame->format;
+        if (!texture || frame->width != texture->w || frame->height != texture->h) {
             SDL_Texture* tex = SDL_CreateTexture(
                 renderer.get(), 
-                ffmpeg_to_sdl3_pix_fmt(frame->format),
+//                ffmpeg_to_sdl3_pix_fmt(frame->format),
+                SDL_PIXELFORMAT_NV12,
                 SDL_TEXTUREACCESS_STREAMING, 
                 frame->width, 
                 frame->height
@@ -787,7 +784,6 @@ struct AppState {
             texture.reset(tex);
         }
 
-//        SDL_UpdateTexture(texture.get(), nullptr, frame->data[0], frame->linesize[0]);
         SDL_UpdateNVTexture(texture.get(), nullptr, frame->data[0], frame->linesize[0], frame->data[1], frame->linesize[1]);
     }
 
