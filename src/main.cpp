@@ -219,6 +219,14 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     state->pause();
                     gui.show_noti(state->is_paused ? "Paused" : "Resumed");
                     break;
+
+                case SDLK_T:
+                    gui.show_noti(state->get_file_name());
+                    break;
+
+                case SDLK_HOME:
+                    state->seek(state->video.get_start_time(), true);
+                    break;
             }
             break;
 
