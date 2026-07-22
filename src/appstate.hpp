@@ -59,15 +59,13 @@ struct AppState {
     std::atomic<std::shared_ptr<Subtitle>> subtitle;
     ff::AudioBuffer audio_buf;
     double tick_diff = 0;
-    int64_t last_video_pts = SDL_MAX_SINT64;
-    int64_t last_audio_pts = SDL_MAX_SINT64;
     SDL_AudioDeviceID audio_device_id = 0;
     std::thread fetch_thread;
     float video_scale = 1.0;
     float video_pan_x = 0.0;
     float video_pan_y = 0.0;
     bool is_loop = true;
-    bool is_looping = false;
+    bool need_play_time = true;
     bool is_seeking = false;
     double seek_time;
     std::mutex fetch_mutex;
@@ -128,9 +126,7 @@ struct AppState {
         audio_stream.reset();
         video.close();
         clear_frame_buffers();
-        last_video_pts = SDL_MAX_SINT64;
-        last_audio_pts = SDL_MAX_SINT64;
-        is_looping = false;
+        need_play_time = true;
     }
 
     bool shutdown() {
@@ -251,19 +247,29 @@ struct AppState {
         if (subtitle_ctx)
             ass.init(img_w, img_h, subtitle_ctx);
 
+        if (!texture || texture->w != img_w || texture->h != img_h) {
+            SDL_Texture* tex = SDL_CreateTexture(
+                renderer.get(),
+                SDL_PIXELFORMAT_NV12,
+                SDL_TEXTUREACCESS_STREAMING, 
+                img_w, 
+                img_h
+            );
+            texture.reset(tex);
+        }
         
         resize_window();
         SDL_SetWindowTitle(window.get(), filename.c_str());
 
+#ifdef _VIDEO_CONVERTER_THREAD_
+        video_converter.start();
+#endif
+        read_next_frame(video.get_start_time());
         fetch_status = 1;
         if (!fetch_thread.joinable()) {
             fetch_thread = std::thread(fetch_thread_worker, this);
             pthread_setname_np(fetch_thread.native_handle(), "fetch");
         }
-#ifdef _VIDEO_CONVERTER_THREAD_
-        video_converter.start();
-#endif
-        read_next_frame(video.get_start_time());
         lock.unlock();
         fetch_cv.notify_one();
         return true;
@@ -324,12 +330,12 @@ struct AppState {
             read_result = video.feed_frame([&](AVFrame *frame) -> void {
                 if (audio_stream) {
 //                    printf("pts: %f, play_time: %f, looping: %i\n", frame->pts * audio_time_base, play_time, is_looping);
-                    if (!is_looping && frame->pts * video.audio_time_base < play_time)
+                    if (!need_play_time && frame->pts * video.audio_time_base < play_time)
                         return;
                     video.convert_audio_frame(frame, &audio_buf);
-//                    if (frame->pts < last_audio_pts)
-//                        set_play_time(frame->pts * audio_time_base);
-                    last_audio_pts = frame->pts;
+                    if (need_play_time) {
+                        set_play_time(frame->pts * video.audio_time_base);
+                    }
                     // Feed the raw sound bytes to SDL3's background mixer
                     if (!SDL_PutAudioStreamData(audio_stream.get(), audio_buf.buf, audio_buf.data_size)) {
                         SDL_Log("Audio Stream Error: %s", SDL_GetError());
@@ -347,8 +353,9 @@ struct AppState {
                 video_converter.cv_.notify_one();
 #else
                 video.feed_video_frame(packet, [&](AVFrame *frame){
-                    auto new_frame = video.video_frame_queue.alloc();
+                    AVFrame *new_frame = nullptr;
                     if (frame->hw_frames_ctx) {
+                        new_frame = video.video_frame_queue.alloc();
                         new_frame->format = AV_PIX_FMT_NV12;
                         av_hwframe_transfer_data(new_frame, frame, 0);
                         new_frame->pts = frame->pts;
@@ -357,8 +364,16 @@ struct AppState {
                             fprintf(stderr, "Mapping to DRM PRIME failed!\n");
                             av_frame_free(&new_frame);
                         }*/
-                    } else
-                        av_frame_move_ref(new_frame, frame);
+                    } else {
+                        if (frame->format != AV_PIX_FMT_NV12) {
+                            new_frame = video.alloc_converted_frame();
+                            video.scale_video_frame(frame, new_frame);
+                            new_frame->duration = frame->duration;
+                        } else {
+                            new_frame = video.video_frame_queue.alloc();
+                            av_frame_move_ref(new_frame, frame);
+                        }
+                    }
                     video.video_frame_queue.push(new_frame);
                 });
 #endif
@@ -403,17 +418,14 @@ struct AppState {
                             need_fetch = true;
                             continue;
                         } else {
-                            last_video_pts = frame->pts;
                             is_seeking = false;
                         }
                     }
-                    if (is_looping || frame_time + tick_diff <= curr_ticks) {
+                    if (need_play_time || frame_time + tick_diff <= curr_ticks) {
 //                        printf("pts: %i\n", frame->pts);
-                        if (frame->pts < last_video_pts) {
-                            is_looping = false;
+                        if (need_play_time) {
                             set_play_time(frame_time);
                         }
-                        last_video_pts = frame->pts;
                         if (frame_to_display)
                             av_frame_free(&frame_to_display);
                         frame_to_display = frame;
@@ -469,7 +481,7 @@ struct AppState {
                     if (is_loop && video.video_frame_queue.empty()) {
 #endif
                         if (seek(video.get_start_time(), false)) {
-                            is_looping = true;
+                            need_play_time = true;
                             if (audio_stream) {
                                 auto bytes = SDL_GetAudioStreamQueued(audio_stream.get());
                                 if (bytes > 0) {
@@ -616,6 +628,7 @@ struct AppState {
     void set_play_time(double play_time)
     {
         tick_diff = get_ticks() - play_time;
+        need_play_time = false;
     }
 
     double get_play_time() const {
@@ -687,104 +700,6 @@ struct AppState {
             pause_time = get_ticks();
             is_paused = true;
         }
-    }
-
-    void render_direct(AVFrame *frame) {
-        // 1. Lock the texture to get SDL's internal pointers and pitches
-        void* locked_pixels = nullptr;
-        int locked_pitch = 0;
-
-        // For NV12, SDL_LockTexture gives you a pointer to the start of the Y plane
-        if (SDL_LockTexture(texture.get(), NULL, &locked_pixels, &locked_pitch) < 0) {
-            // Handle error
-            return;
-        }
-
-        // 2. Set up your destination arrays for sws_scale
-        uint8_t* dst_data[4] = { nullptr };
-        int dst_linesize[4] = { 0 };
-
-        // NV12 Plane 0: Y Plane
-        dst_data[0] = static_cast<uint8_t*>(locked_pixels);
-        dst_linesize[0] = locked_pitch;
-
-        // NV12 Plane 1: UV Plane 
-        // In NV12, the UV plane starts immediately after the Y plane (width * height)
-        // but scaled to the locked pitch!
-        dst_data[1] = dst_data[0] + (locked_pitch * frame->height);
-        dst_linesize[1] = locked_pitch; // NV12 UV pitch is identical to Y pitch in SDL
-
-        video.scale_video_frame(frame, dst_data, dst_linesize);
-
-        // 4. Unlock to commit the changes and prepare for rendering
-        SDL_UnlockTexture(texture.get());
-    }
-
-    SDL_PixelFormat ffmpeg_to_sdl3_pix_fmt(auto av_fmt) {
-        switch (av_fmt) {
-            // --- Planar YUV Formats (8-bit) ---
-            case AV_PIX_FMT_YUV420P:
-                return SDL_PIXELFORMAT_IYUV; // Also known as I420 (Y, U, V planes)
-            case AV_PIX_FMT_YUYV422:
-                return SDL_PIXELFORMAT_YUY2; // Packed YUV 4:2:2
-            case AV_PIX_FMT_UYVY422:
-                return SDL_PIXELFORMAT_UYVY; // Packed YUV 4:2:2 (reversed chroma/luma byte order)
-
-            // --- Semi-Planar YUV Formats (Hardware-friendly) ---
-            case AV_PIX_FMT_NV12:
-                return SDL_PIXELFORMAT_NV12; // Y plane + interleaved U/V plane
-            case AV_PIX_FMT_NV21:
-                return SDL_PIXELFORMAT_NV21; // Y plane + interleaved V/U plane
-
-            case AV_PIX_FMT_P010LE:
-                return SDL_PIXELFORMAT_P010;
-
-            // --- Unpacked RGB/RGBA Formats ---
-            case AV_PIX_FMT_RGB24:
-                return SDL_PIXELFORMAT_RGB24;
-            case AV_PIX_FMT_BGR24:
-                return SDL_PIXELFORMAT_BGR24;
-            case AV_PIX_FMT_RGBA:
-                return SDL_PIXELFORMAT_RGBA32;
-            case AV_PIX_FMT_BGRA:
-                return SDL_PIXELFORMAT_BGRA32;
-            case AV_PIX_FMT_ARGB:
-                return SDL_PIXELFORMAT_ARGB32;
-            case AV_PIX_FMT_ABGR:
-                return SDL_PIXELFORMAT_ABGR32;
-
-            // --- Packed RGB Formats ---
-            case AV_PIX_FMT_RGB565LE:
-                return SDL_PIXELFORMAT_RGB565;
-            case AV_PIX_FMT_BGR565LE:
-                return SDL_PIXELFORMAT_BGR565;
-
-            // --- Monochrome / Grayscale ---
-            case AV_PIX_FMT_GRAY8:
-                return SDL_PIXELFORMAT_INDEX8; // SDL doesn't have a direct "LUMA8" but INDEX8 works for raw 8-bit gray blits
-
-            // --- Unsupported Direct Maps ---
-            // (10-bit HDR formats, hardware surfaces like CUDA/VAAPI/DXVA2,
-            // and exotic formats must fallback to swscale or custom GPU shaders)
-            default:
-                return SDL_PIXELFORMAT_UNKNOWN;
-        }
-    }
-
-    void draw_texture2(AVFrame *frame) {
-        if (!texture || frame->width != texture->w || frame->height != texture->h) {
-            SDL_Texture* tex = SDL_CreateTexture(
-                renderer.get(), 
-//                ffmpeg_to_sdl3_pix_fmt(frame->format),
-                SDL_PIXELFORMAT_NV12,
-                SDL_TEXTUREACCESS_STREAMING, 
-                frame->width, 
-                frame->height
-            );
-            texture.reset(tex);
-        }
-
-        SDL_UpdateNVTexture(texture.get(), nullptr, frame->data[0], frame->linesize[0], frame->data[1], frame->linesize[1]);
     }
 
     void draw_ass() {

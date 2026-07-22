@@ -79,8 +79,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             auto video_frame = state->video_frame.load(std::memory_order_acquire);
             if (video_frame) {
     //            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
-    //            SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
-                state->draw_texture2(video_frame);
+                SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
             }
         }
             break;
@@ -89,8 +88,6 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         {
             auto subtitle = state->subtitle.load(std::memory_order_acquire);
             if (subtitle) {
-    //            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
-    //            SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
                 gui.show_subtitle(subtitle->text, static_cast<uint64_t>(subtitle->duration * 1000));
             }
         }
