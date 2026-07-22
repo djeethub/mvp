@@ -308,8 +308,8 @@ struct AppState {
     void set_subtitle(const std::string& text, AVPacket *packet) {
         auto data = std::make_shared<Subtitle>();
         data->text = text;
-        data->pts = packet->pts * video.subtitle_time_base;
-        data->duration = packet->duration * video.subtitle_time_base;
+        data->pts = packet->pts * video.get_subtitle_time_base();
+        data->duration = packet->duration * video.get_subtitle_time_base();
         AppState::subtitle.store(data, std::memory_order_release);
         SDL_Event event;
         SDL_zero(event);
@@ -330,11 +330,11 @@ struct AppState {
             read_result = video.feed_frame([&](AVFrame *frame) -> void {
                 if (audio_stream) {
 //                    printf("pts: %f, play_time: %f, looping: %i\n", frame->pts * audio_time_base, play_time, is_looping);
-                    if (!need_play_time && frame->pts * video.audio_time_base < play_time)
+                    if (!need_play_time && frame->pts * video.get_audio_time_base() < play_time)
                         return;
                     video.convert_audio_frame(frame, &audio_buf);
                     if (need_play_time) {
-                        play_time = frame->pts * video.audio_time_base;
+                        play_time = frame->pts * video.get_audio_time_base();
                         set_play_time(play_time);
                     }
                     // Feed the raw sound bytes to SDL3's background mixer
@@ -357,18 +357,18 @@ struct AppState {
                     AVFrame *new_frame = nullptr;
                     if (frame->hw_frames_ctx) {
                         new_frame = video.video_frame_queue.alloc();
-                        av_frame_copy_props(new_frame, frame);
-                        new_frame->format = AV_PIX_FMT_NV12;
+                        new_frame->format = video.pixel_format;
                         av_hwframe_transfer_data(new_frame, frame, 0);
+                        new_frame->pts = frame->pts;
     /*                    if (av_hwframe_map(new_frame, frame, AV_HWFRAME_MAP_READ) < 0) {
                             fprintf(stderr, "Mapping to DRM PRIME failed!\n");
                             av_frame_free(&new_frame);
                         }*/
                     } else {
-                        if (frame->format != AV_PIX_FMT_NV12) {
+                        if (frame->format != video.pixel_format) {
                             new_frame = video.alloc_converted_frame();
-                            av_frame_copy_props(new_frame, frame);
                             video.scale_video_frame(frame, new_frame);
+                            new_frame->pts = frame->pts;
                         } else {
                             new_frame = video.video_frame_queue.alloc();
                             av_frame_move_ref(new_frame, frame);
@@ -410,7 +410,7 @@ struct AppState {
                 while (!video.video_frame_queue.empty())
                 {
                     auto frame = video.video_frame_queue.front();
-                    auto frame_time = frame->pts * video.video_time_base;
+                    auto frame_time = frame->pts * video.get_video_time_base();
                     if (is_seeking) {
                         if (frame_time < seek_time) {
                             video.video_frame_queue.pop();
@@ -441,13 +441,13 @@ struct AppState {
 #endif
             if (frame_to_display)
             {
-                if (frame_to_display->format == AV_PIX_FMT_NV12) {
+                if (frame_to_display->format == video.pixel_format) {
                     auto old_frame = video_frame.exchange(frame_to_display, std::memory_order_release);
                     av_frame_free(&old_frame);
                 } else {
                     auto converted_frame = video.alloc_converted_frame();
-                    av_frame_copy_props(converted_frame, frame_to_display);
                     video.scale_video_frame(frame_to_display, converted_frame);
+                    converted_frame->pts = frame_to_display->pts;
                     av_frame_free(&frame_to_display);
                     auto old_frame = video_frame.exchange(converted_frame, std::memory_order_release);
                     av_frame_free(&old_frame);
@@ -482,17 +482,10 @@ struct AppState {
 #endif
                         if (seek(video.get_start_time(), false)) {
                             need_play_time = true;
-                            if (audio_stream) {
-                                auto bytes = SDL_GetAudioStreamQueued(audio_stream.get());
-                                if (bytes > 0) {
-                                    return static_cast<double>(bytes) / (44100 * 2 * sizeof(int16_t));
-                                }
-                            }
-                            auto frame = video_frame.load(std::memory_order_relaxed);
-                            if (frame && frame->duration > 0)
-                                return frame->duration * video.video_time_base;
-                            else
-                                return 0.001;
+                            interval = video.get_duration() - play_time;
+                            if (interval <= 0)
+                                interval = 0.001;
+                            return interval;
                         }
                     }
                 }
@@ -511,7 +504,7 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
             auto frame_time = video_converter.next_play_time();
 #else
-            auto frame_time = video.video_frame_queue.front()->pts * video.video_time_base;
+            auto frame_time = video.video_frame_queue.front()->pts * video.get_video_time_base();
 #endif
             interval = frame_time - curr_ticks;
 //            printf("interval: %f\n", interval);

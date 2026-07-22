@@ -69,7 +69,7 @@ public:
             video->feed_video_frame(packet, [&](AVFrame *frame){
                 auto new_frame = frame_queue.alloc();
                 if (frame->hw_frames_ctx) {
-                    new_frame->format = AV_PIX_FMT_NV12;
+                    new_frame->format = video->pixel_format;
                     av_hwframe_transfer_data(new_frame, frame, 0);
                     new_frame->pts = frame->pts;
                     new_frame->duration = frame->duration;

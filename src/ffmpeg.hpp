@@ -115,6 +115,8 @@ typedef AvQueue<AVFrame *, av_frame_alloc, av_frame_free> FrameQueue;
 
 class VideoFile {
 public:
+    const AVPixelFormat pixel_format = AV_PIX_FMT_NV12;
+
     VideoFile() = default;
     ~VideoFile() {
         close();
@@ -140,7 +142,7 @@ public:
             close();
             return false;
         }
-        duration = format_ctx->duration / (double)AV_TIME_BASE;
+        duration = static_cast<double>(format_ctx->duration) / AV_TIME_BASE;
         return true;
     }
 
@@ -237,7 +239,7 @@ public:
         audio_codec_ctx = avcodec_alloc_context3(codec);
         avcodec_parameters_to_context(audio_codec_ctx, codec_params);
         avcodec_open2(audio_codec_ctx, codec, nullptr);
-        audio_time_base = get_audio_time_base();
+        audio_time_base = av_q2d(format_ctx->streams[audio_stream_index]->time_base);
         return true;
     }
 
@@ -255,7 +257,7 @@ public:
         video_codec_ctx->thread_type = FF_THREAD_FRAME; // Or FF_THREAD_SLICE
         avcodec_parameters_to_context(video_codec_ctx, codec_params);
         avcodec_open2(video_codec_ctx, codec, nullptr);
-        video_time_base = get_video_time_base();
+        video_time_base = av_q2d(format_ctx->streams[video_stream_index]->time_base);
         return true;
     }
 
@@ -294,7 +296,7 @@ public:
         sws_free_context(&sws_ctx);
         sws_ctx = sws_getContext(
             frame->width, frame->height, static_cast<AVPixelFormat>(frame->format), // True source format
-            frame->width, frame->height, AV_PIX_FMT_NV12,       // True target format
+            frame->width, frame->height, pixel_format,       // True target format
             SWS_BILINEAR, nullptr, nullptr, nullptr);
         return sws_ctx != nullptr;
     }
@@ -394,6 +396,7 @@ public:
         }
         sws_scale(sws_ctx, frame->data, frame->linesize, 0,
                   video_codec_ctx->height, converted_frame->data, converted_frame->linesize);
+        converted_frame->format = pixel_format;
     }
 
     void scale_video_frame(AVFrame *frame, uint8_t **data, int *linesize)
@@ -405,7 +408,7 @@ public:
     AVFrame *alloc_converted_frame()
     {
         AVFrame *frame = av_frame_alloc();
-        frame->format = AV_PIX_FMT_NV12;
+        frame->format = pixel_format;
         frame->width  = video_codec_ctx->width;
         frame->height = video_codec_ctx->height;
 
@@ -460,16 +463,6 @@ public:
         return video_stream_index >= 0;
     }
 
-    double get_audio_time_base() const
-    {
-        return audio_codec_ctx ? av_q2d(format_ctx->streams[audio_stream_index]->time_base) : 0.0;
-    }
-
-    double get_video_time_base() const
-    {
-        return video_codec_ctx ? av_q2d(format_ctx->streams[video_stream_index]->time_base) : 0.0;
-    }
-
     int64_t seek(int64_t ts)
     {
         int seek_result = avformat_seek_file(
@@ -486,10 +479,6 @@ public:
                 avcodec_flush_buffers(subtitle_codec_ctx);
         }
         return seek_result;
-    }
-
-    double get_duration() {
-        return duration;
     }
 
     std::vector<ChapterData> ReadChapters() {
@@ -576,21 +565,25 @@ private:
     AVFrame* frame = nullptr;
     AVFrame* video_frame = nullptr;
     AVBufferRef *hw_device_ctx = NULL;
-    double duration;
     std::vector<Subtitle> subtitles;
     std::vector<std::string> sub_lang_pref = {"en", "eng", "ja", "jpn"};
     std::vector<std::string> audio_lang_pref = {"ja", "jpn", "en", "eng"};
     int subtitle_stream_idx = -1;
     AVCodecContext* subtitle_codec_ctx = nullptr;
-
-public:
+    double duration;
     double video_time_base = 0.0;
     double audio_time_base = 0.0;
     double subtitle_time_base = 0.0;
+    AVBufferPool *converted_pool = nullptr;
+
+public:
+    double get_duration() const { return duration; }
+    double get_video_time_base() const { return video_time_base; }
+    double get_audio_time_base() const { return audio_time_base; }
+    double get_subtitle_time_base() const { return subtitle_time_base; }
 #ifdef _VIDEO_CONVERTER_THREAD_
     PacketQueue video_packet_queue;
 #endif
     FrameQueue video_frame_queue;
-    AVBufferPool *converted_pool = nullptr;
 };
 } // namespace ff

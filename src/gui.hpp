@@ -183,7 +183,7 @@ class AppGui {
                 auto duration = state->video.get_duration();
                 float v = play_time / duration;
                 ImGui::SetNextItemWidth(-1.0f);
-                if (ImGui::SliderFloat("##Seek", &v, 0.0f, 1.0f, std::format("{:.0f}/{:.0f}", play_time, duration).c_str())) {
+                if (ImGui::SliderFloat("##Seek", &v, 0.0f, 1.0f, std::format("{:.0f} / {:.0f}", play_time, duration - play_time).c_str())) {
                     state->seek_ratio(v);
                 }
             }
