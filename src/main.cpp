@@ -196,10 +196,10 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     }
                     break;
                 case SDLK_RIGHT:
-                    state->seek_relative(event->key.mod & SDL_KMOD_ALT ? 15 : 5);
+                    state->seek_relative(event->key.mod & SDL_KMOD_ALT ? 15 : 6);
                     break;
                 case SDLK_LEFT:
-                    state->seek_relative(event->key.mod & SDL_KMOD_ALT ? -15 : -5);
+                    state->seek_relative(event->key.mod & SDL_KMOD_ALT ? -15 : -6);
                     break;
 
                 case SDLK_PAGEDOWN:

@@ -468,7 +468,7 @@ public:
         int seek_result = avformat_seek_file(
                 format_ctx,
                 -1,
-                INT64_MIN, ts, INT64_MAX,
+                INT64_MIN, ts, ts,
                 AVSEEK_FLAG_BACKWARD);
         if (seek_result >= 0) {
             if (audio_codec_ctx)

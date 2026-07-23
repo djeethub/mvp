@@ -11,6 +11,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(AVCODEC REQUIRED libavcodec libavformat libswresample libavutil libswscale)
 pkg_check_modules(LIBASS REQUIRED IMPORTED_TARGET libass)
+find_package(Fontconfig REQUIRED)
 
 add_subdirectory(vendor/SDL EXCLUDE_FROM_ALL)
 
@@ -57,4 +58,5 @@ target_link_libraries(main PRIVATE
     my_imgui
     ${AVCODEC_LIBRARIES}
     ${LIBASS_LIBRARIES}
+    Fontconfig::Fontconfig
 )

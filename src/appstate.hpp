@@ -72,7 +72,6 @@ struct AppState {
     std::condition_variable fetch_cv;
     int fetch_status = 0;   // 0 = running, 1 = reset, -1 = shutdown
     std::vector<ff::ChapterData> chapter_list;
-    double pause_time;
     bool is_paused = false;
 #ifdef _VIDEO_CONVERTER_THREAD_
     VideoConverter video_converter;
@@ -330,6 +329,11 @@ struct AppState {
             read_result = video.feed_frame([&](AVFrame *frame) -> void {
                 if (audio_stream) {
 //                    printf("pts: %f, play_time: %f, looping: %i\n", frame->pts * audio_time_base, play_time, is_looping);
+                    if (is_seeking) {
+                        if ((frame->pts + frame->duration) * video.get_audio_time_base() <= seek_time) {
+                            return;
+                        }
+                    }
                     if (!need_play_time && frame->pts * video.get_audio_time_base() < play_time)
                         return;
                     video.convert_audio_frame(frame, &audio_buf);
@@ -360,6 +364,7 @@ struct AppState {
                         new_frame->format = video.pixel_format;
                         av_hwframe_transfer_data(new_frame, frame, 0);
                         new_frame->pts = frame->pts;
+                        new_frame->duration = frame->duration;
     /*                    if (av_hwframe_map(new_frame, frame, AV_HWFRAME_MAP_READ) < 0) {
                             fprintf(stderr, "Mapping to DRM PRIME failed!\n");
                             av_frame_free(&new_frame);
@@ -369,6 +374,7 @@ struct AppState {
                             new_frame = video.alloc_converted_frame();
                             video.scale_video_frame(frame, new_frame);
                             new_frame->pts = frame->pts;
+                            new_frame->duration = frame->duration;
                         } else {
                             new_frame = video.video_frame_queue.alloc();
                             av_frame_move_ref(new_frame, frame);
@@ -410,9 +416,8 @@ struct AppState {
                 while (!video.video_frame_queue.empty())
                 {
                     auto frame = video.video_frame_queue.front();
-                    auto frame_time = frame->pts * video.get_video_time_base();
                     if (is_seeking) {
-                        if (frame_time < seek_time) {
+                        if ((frame->pts + frame->duration) * video.get_video_time_base() <= seek_time) {
                             video.video_frame_queue.pop();
                             av_frame_free(&frame);
                             need_fetch = true;
@@ -421,6 +426,7 @@ struct AppState {
                             is_seeking = false;
                         }
                     }
+                    auto frame_time = frame->pts * video.get_video_time_base();
                     if (need_play_time || frame_time + tick_diff <= curr_ticks) {
 //                        printf("pts: %i\n", frame->pts);
                         if (need_play_time) {
@@ -448,6 +454,7 @@ struct AppState {
                     auto converted_frame = video.alloc_converted_frame();
                     video.scale_video_frame(frame_to_display, converted_frame);
                     converted_frame->pts = frame_to_display->pts;
+                    converted_frame->duration = frame_to_display->duration;
                     av_frame_free(&frame_to_display);
                     auto old_frame = video_frame.exchange(converted_frame, std::memory_order_release);
                     av_frame_free(&old_frame);
@@ -466,7 +473,7 @@ struct AppState {
 
     double time_next_frame(double interval = 0.2)
     {
-        if (is_paused)
+        if (is_paused && !is_seeking)
             return 77777;
         auto curr_ticks = get_ticks();
         check_next_frame(curr_ticks);
@@ -482,10 +489,18 @@ struct AppState {
 #endif
                         if (seek(video.get_start_time(), false)) {
                             need_play_time = true;
-                            interval = video.get_duration() - play_time;
-                            if (interval <= 0)
-                                interval = 0.001;
-                            return interval;
+                            if (audio_stream) {
+                                auto bytes = SDL_GetAudioStreamQueued(audio_stream.get());
+                                if (bytes > 0) {
+                                    return static_cast<double>(bytes) / (44100 * 2 * sizeof(int16_t));
+                                }
+                            }
+                            auto frame = video_frame.load(std::memory_order_relaxed);
+                            if (frame && frame->duration > 0) {
+                                return frame->duration * video.get_video_time_base();
+                            } else {
+                                return 0.001;
+                            }
                         }
                     }
                 }
@@ -525,10 +540,10 @@ struct AppState {
     }
 
     bool seek(double ts, bool reset) {
-        if (is_seeking)
-            return false;
         if (reset)
         {
+            if (is_seeking)
+                return false;
             {
                 std::lock_guard<std::mutex> lock(fetch_mutex);
                 if (video.seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0)
@@ -545,6 +560,7 @@ struct AppState {
                 fetch_cv.notify_one();
         } else if (video.seek(ts) >= 0)
         {
+            is_seeking = false;
             return true;
         }
         return false;
@@ -621,11 +637,12 @@ struct AppState {
     void set_play_time(double play_time)
     {
         tick_diff = get_ticks() - play_time;
+        seek_time = play_time;
         need_play_time = false;
     }
 
     double get_play_time() const {
-        return (is_paused ? pause_time : get_ticks()) - tick_diff;
+        return is_paused ? seek_time : (get_ticks() - tick_diff);
     }
 
     void resize_window(float window_scale = 1.0) {
@@ -676,21 +693,17 @@ struct AppState {
     }
 
     void pause() {
+        std::unique_lock<std::mutex> lock(fetch_mutex);
         if (is_paused) {
-            {
-                std::lock_guard<std::mutex> lock(fetch_mutex);
-                is_paused = false;
-                fetch_status = 2;
-                tick_diff += get_ticks() - pause_time;
-            }
+            is_paused = false;
+            fetch_status = 2;
+            set_play_time(seek_time);
+            lock.unlock();
             fetch_cv.notify_one();
             SDL_ResumeAudioStreamDevice(audio_stream.get());
-        }
-        else
-        {
-            std::lock_guard<std::mutex> lock(fetch_mutex);
+        } else {
             SDL_PauseAudioStreamDevice(audio_stream.get());
-            pause_time = get_ticks();
+            seek_time = get_play_time();
             is_paused = true;
         }
     }
