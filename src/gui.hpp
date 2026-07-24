@@ -196,7 +196,7 @@ class AppGui {
                 ImVec2 osd_pos = ImVec2(20.0f, 20.0f); // Top left screen alignment
 //                ImGui::Text(noti_text.c_str());
                 ImGui::PushFont(osdFont);
-                DrawTextWithShadow(
+                DrawTextWithOutline(
                     draw_list, 
                     ImGui::GetFont(), 
                     ImGui::GetFontSize(), // Scaled slightly larger for OSD
@@ -204,7 +204,7 @@ class AppGui {
                     noti_text.c_str(), 
                     IM_COL32(255, 255, 255, 255), // Pure White Text
                     IM_COL32(0, 0, 0, 200),       // Soft Transparent Black Outline
-                    1.9f                          // outline stroke thickness
+                    1.6f                          // outline stroke thickness
                 );
                 ImGui::PopFont();
             }
@@ -261,12 +261,12 @@ class AppGui {
 
             if (ImGui::BeginPopup("mymenu"))
             {
-                if (ImGui::MenuItem("Next Image", "Space", false, state->image_files.size() > 1))
+                if (ImGui::MenuItem("Next File", ".", false, state->image_files.size() > 1))
                 {
                     state->current_index = (state->current_index + 1) % state->image_files.size();
                     state->load_image_at_index();
                 }
-                if (ImGui::MenuItem("Previous Image", "Backspace", false, state->image_files.size() > 1))
+                if (ImGui::MenuItem("Previous File", ",", false, state->image_files.size() > 1))
                 {
                     state->current_index = (state->current_index + state->image_files.size() - 1) % state->image_files.size();
                     state->load_image_at_index();

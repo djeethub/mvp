@@ -554,12 +554,12 @@ struct AppState {
                     set_play_time(ts);
                     read_next_frame(ts);
                     fetch_status = 1;
-                }
+                } else
+                    return false;
             }
-            if (is_seeking)
-                fetch_cv.notify_one();
-        } else if (video.seek(ts) >= 0)
-        {
+            fetch_cv.notify_one();
+            return true;
+        } else if (video.seek(ts) >= 0) {
             is_seeking = false;
             return true;
         }
@@ -599,7 +599,7 @@ struct AppState {
                 if (n > 0)
                     id += n;
                 else if (n < 0) {
-                    if (play_time < chapter.start_time + 1)
+                    if (play_time < chapter.start_time + 5)
                         id += n;
                     else
                         id += n + 1;

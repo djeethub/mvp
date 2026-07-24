@@ -399,12 +399,6 @@ public:
         converted_frame->format = pixel_format;
     }
 
-    void scale_video_frame(AVFrame *frame, uint8_t **data, int *linesize)
-    {
-        sws_scale(sws_ctx, frame->data, frame->linesize, 0,
-                  video_codec_ctx->height, data, linesize);
-    }
-
     AVFrame *alloc_converted_frame()
     {
         AVFrame *frame = av_frame_alloc();
