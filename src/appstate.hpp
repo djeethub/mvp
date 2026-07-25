@@ -326,20 +326,12 @@ struct AppState {
 #endif
             if (video_frame_count >= 1 && (!audio_stream || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
                 break;
-            read_result = video.feed_frame([&](AVFrame *frame) -> void {
+            read_result = video.feed_frame(play_time, [&](AVFrame *frame) -> void {
                 if (audio_stream) {
 //                    printf("pts: %f, play_time: %f, looping: %i\n", frame->pts * audio_time_base, play_time, is_looping);
                     if (is_seeking) {
-//                        if ((frame->pts + frame->duration) * video.get_audio_time_base() <= seek_time) {
-                        if (frame->pts * video.get_audio_time_base() < seek_time) {
-                            return;
-                        } else {
-                            is_seeking = false;
-                            need_play_time = true;
-                        }
+                        set_seeking(false);
                     }
-                    if (!need_play_time && frame->pts * video.get_audio_time_base() < play_time)
-                        return;
 //                    video.convert_audio_frame(frame, &audio_buf);
                     if (need_play_time) {
                         play_time = frame->pts * video.get_audio_time_base();
@@ -365,7 +357,10 @@ struct AppState {
                 }
                 video_converter.cv_.notify_one();
 #else
-                video.feed_video_frame(packet, [&](AVFrame *frame){
+                video.feed_video_frame(packet, [&](AVFrame *frame) {
+                    if (frame->pts * video.get_video_time_base() < play_time) {
+                        return;
+                    }
                     AVFrame *new_frame = nullptr;
                     if (frame->format == AV_PIX_FMT_VAAPI) {
                         new_frame = video.video_frame_queue.alloc();
@@ -424,18 +419,17 @@ struct AppState {
                 while (!video.video_frame_queue.empty())
                 {
                     auto frame = video.video_frame_queue.front();
+                    auto frame_time = frame->pts * video.get_video_time_base();
                     if (is_seeking) {
-                        if ((frame->pts + frame->duration) * video.get_video_time_base() <= seek_time) {
+                        if (frame_time < curr_ticks - tick_diff) {
                             video.video_frame_queue.pop();
                             av_frame_free(&frame);
                             need_fetch = true;
                             continue;
                         } else {
-                            is_seeking = false;
-                            need_play_time = true;
+                            set_seeking(false);
                         }
                     }
-                    auto frame_time = frame->pts * video.get_video_time_base();
                     if (need_play_time || frame_time + tick_diff <= curr_ticks) {
 //                        printf("pts: %i\n", frame->pts);
                         if (need_play_time) {
@@ -557,9 +551,7 @@ struct AppState {
                 std::lock_guard<std::mutex> lock(fetch_mutex);
                 if (video.seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0)
                 {
-                    is_seeking = true;
-                    seek_time = ts;
-                    recycle_frame_buffers();
+                    set_seeking(true, ts);
                     read_next_frame(ts);
                     fetch_status = 1;
                 } else
@@ -572,6 +564,19 @@ struct AppState {
             return true;
         }
         return false;
+    }
+
+    void set_seeking(bool set, double ts = 0.0) {
+        if (set) {
+            is_seeking = true;
+            seek_time = ts;
+            video.set_skip(AVDISCARD_NONREF, AVDISCARD_ALL, AVDISCARD_ALL);
+            recycle_frame_buffers();
+        } else {
+            is_seeking = false;
+            video.set_skip(AVDISCARD_DEFAULT, AVDISCARD_DEFAULT, AVDISCARD_DEFAULT);
+            need_play_time = true;
+        }
     }
 
     bool seek_relative(double t) {

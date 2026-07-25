@@ -307,7 +307,7 @@ public:
     }
 
     template <typename AudioFeedFunc, typename VideoFeedFunc, typename SubtitleFeedFunc>
-    int feed_frame(AudioFeedFunc audio_feed, VideoFeedFunc video_feed, SubtitleFeedFunc subtitle_feed)
+    int feed_frame(double play_time, AudioFeedFunc audio_feed, VideoFeedFunc video_feed, SubtitleFeedFunc subtitle_feed)
     {
         if (!packet) packet = av_packet_alloc();
         if (!frame) frame = av_frame_alloc();
@@ -318,7 +318,7 @@ public:
 
         if (packet->stream_index == audio_stream_index)
         {
-            if (avcodec_send_packet(audio_codec_ctx, packet) >= 0)
+            if (packet->pts * audio_time_base >= play_time && avcodec_send_packet(audio_codec_ctx, packet) >= 0)
             {
                 while (avcodec_receive_frame(audio_codec_ctx, frame) >= 0)
                 {
@@ -572,6 +572,11 @@ public:
     auto get_subtitle_time_base() const { return subtitle_time_base; }
     auto get_audio_channels() const { return audio_codec_ctx->ch_layout.nb_channels; }
     auto get_audio_sample_rate() const { return audio_codec_ctx->sample_rate; }
+    void set_skip(AVDiscard frame, AVDiscard loop_filter, AVDiscard idct) {
+        video_codec_ctx->skip_frame = frame;
+        video_codec_ctx->skip_loop_filter = loop_filter;
+        video_codec_ctx->skip_idct = idct;
+    }
 #ifdef _VIDEO_CONVERTER_THREAD_
     PacketQueue video_packet_queue;
 #endif
