@@ -76,10 +76,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     switch (event->type) {
         case USEREVENT_NEXT_FRAME:
         {
-            auto video_frame = state->video_frame.load(std::memory_order_acquire);
+            auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
             if (video_frame) {
     //            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
                 SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
+                av_frame_free(&video_frame);
             }
         }
             break;
@@ -127,15 +128,13 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                 case SDLK_ESCAPE: return SDL_APP_SUCCESS;
                 case SDLK_RETURN:
                 case SDLK_PERIOD:
-                    if (state->image_files.size() > 1) {
-                        state->current_index = (state->current_index + 1) % state->image_files.size();
-                        state->load_image_at_index();
+                    if (state->open_next_file(true)) {
+                        gui.show_noti(state->get_file_name());
                     }
                     break;
                 case SDLK_COMMA:
-                    if (state->image_files.size() > 1) {
-                        state->current_index = (state->current_index + state->image_files.size() - 1) % state->image_files.size();
-                        state->load_image_at_index();
+                    if (state->open_next_file(false)) {
+                        gui.show_noti(state->get_file_name());                        
                     }
                     break;
                 case SDLK_L:
@@ -210,7 +209,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                         if (state->seek_to_chapter(id))
                             gui.show_noti(state->chapter_list[id].title);
                     } else {
-                        state->seek_relative(event->key.key == SDLK_PAGEDOWN ? 30 : -30);
+                        state->seek_relative(event->key.key == SDLK_PAGEDOWN ? 40 : -40);
                     }
                 }
                     break;

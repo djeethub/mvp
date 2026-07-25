@@ -15,6 +15,7 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <future>
 
 #include "ffmpeg.hpp"
 #ifdef _VIDEO_CONVERTER_THREAD_
@@ -27,6 +28,7 @@
 #define USEREVENT_SUBTITLE (SDL_EVENT_USER + 2)
 #define USEREVENT_SUBTITLE_ASS (SDL_EVENT_USER + 4)
 #define USEREVENT_QUIT (SDL_EVENT_USER + 3)
+#define USEREVENT_DIR (SDL_EVENT_USER + 5)
 
 namespace fs = std::filesystem;
 
@@ -41,6 +43,13 @@ struct Subtitle {
     std::string text;
     double pts;
     double duration;
+};
+
+struct DirData {
+    std::string parent_dir;
+    std::string file_name;
+    std::vector<std::string> list;
+    int idx;
 };
 
 struct AppState {
@@ -77,6 +86,7 @@ struct AppState {
     VideoConverter video_converter;
 #endif
     AssHandler ass;
+    std::future<DirData *> dir_future;
 
     AppState() {
 #ifdef _VIDEO_CONVERTER_THREAD_
@@ -143,6 +153,31 @@ struct AppState {
         return true;
     }
 
+    static DirData *dir_worker(DirData *data) {
+        auto& list = data->list;
+
+        // Enumerate directory for supported images
+        try {
+            for (auto &entry : fs::directory_iterator(data->parent_dir)) {
+                if (!entry.is_regular_file()) continue;
+                if (is_supported_image(entry.path())) {
+                    list.push_back(entry.path().filename().string());
+                }
+            }
+            // remove duplicates and sort
+            std::sort(list.begin(), list.end());
+            list.erase(std::unique(list.begin(), list.end()), list.end());
+
+            // find initial file index
+            auto it = std::find(list.begin(), list.end(), data->file_name);
+            if (it != list.end()) data->idx = static_cast<std::size_t>(std::distance(list.begin(), it));
+        } catch (...) {
+            // filesystem errors -> failure
+        }
+        
+        return data;
+    }
+
     bool open_file(const char *file_path) {
         if (!is_supported_image(file_path)) {
             std::cerr << "Not supported file: " << file_path << "\n";
@@ -152,35 +187,22 @@ struct AppState {
         current_index = 0;
         image_files.clear();
 
+        if (dir_future.valid())
+            delete dir_future.get();
+        DirData *data = new DirData;
+
         fs::path argpath = file_path;
         if (argpath.has_parent_path()) {
-            parent_dir = argpath.parent_path().string();
-            if (parent_dir.back() != fs::path::preferred_separator) parent_dir.push_back(fs::path::preferred_separator);
-            image_files.push_back(argpath.filename().string());
+            data->parent_dir = argpath.parent_path().string();
+            if (data->parent_dir.back() != fs::path::preferred_separator) data->parent_dir.push_back(fs::path::preferred_separator);
         } else {
-            parent_dir = std::string("./");
-            image_files.push_back(argpath.filename().string());
+            data->parent_dir = std::string("./");
         }
+        data->file_name = argpath.filename().string();
+        dir_future = std::async(dir_worker, data);
 
-        // Enumerate directory for supported images
-        try {
-            for (auto &entry : fs::directory_iterator(parent_dir)) {
-                if (!entry.is_regular_file()) continue;
-                if (is_supported_image(entry.path())) {
-                    image_files.push_back(entry.path().filename().string());
-                }
-            }
-            // remove duplicates and sort
-            std::sort(image_files.begin(), image_files.end());
-            image_files.erase(std::unique(image_files.begin(), image_files.end()), image_files.end());
-
-            // find initial file index
-            auto it = std::find(image_files.begin(), image_files.end(), argpath.filename().string());
-            if (it != image_files.end()) current_index = static_cast<std::size_t>(std::distance(image_files.begin(), it));
-        } catch (...) {
-            // filesystem errors -> failure
-            return false;
-        }
+        image_files.push_back(data->file_name);
+        parent_dir = data->parent_dir;
 
         return true;
     }
@@ -274,6 +296,30 @@ struct AppState {
         return true;
     }
 
+    bool open_next_file(bool next) {
+        if (dir_future.valid())
+        {
+            auto *data = dir_future.get();
+            image_files = std::move(data->list);
+            current_index = data->idx;
+            delete data;
+        }
+
+        if (next) {
+            if (current_index < image_files.size() - 1) {
+                current_index++;
+                return load_image_at_index();
+            }
+        } else {
+            if (current_index > 0) {
+                current_index--;
+                return load_image_at_index();
+            }
+        }
+
+        return false;
+    }
+
     // Helper to isolate the Dialogue payload and extract the text
     std::string extract_dialogue_ass(const std::string& line) {
         size_t pos = 0;
@@ -318,6 +364,8 @@ struct AppState {
 
     int read_next_frame(double play_time) {
         int read_result = 0;
+        if (need_play_time)
+            play_time = -1.0;
         while (true) {
 #ifdef _VIDEO_CONVERTER_THREAD_
             auto video_frame_count = video_converter.count_video_packet();
