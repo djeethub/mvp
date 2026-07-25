@@ -240,20 +240,25 @@ public:
         avcodec_parameters_to_context(audio_codec_ctx, codec_params);
         avcodec_open2(audio_codec_ctx, codec, nullptr);
         audio_time_base = av_q2d(format_ctx->streams[audio_stream_index]->time_base);
+        printf("Codec:          %s\n", codec->name);
+        printf("Sample rate:    %d Hz\n", audio_codec_ctx->sample_rate);
+        printf("Channels:       %d\n", audio_codec_ctx->ch_layout.nb_channels);
+        printf("Sample format:  %s\n", av_get_sample_fmt_name(audio_codec_ctx->sample_fmt));
+        printf("Bit rate:       %lld\n", (long long)audio_codec_ctx->bit_rate);        
         return true;
     }
 
     bool open_video_decoder()
     {
-//        init_vaapi_device();
         AVCodecParameters *codec_params = format_ctx->streams[video_stream_index]->codecpar;
         const AVCodec *codec = avcodec_find_decoder(codec_params->codec_id);
         video_codec_ctx = avcodec_alloc_context3(codec);
-        if (hw_device_ctx) {
+        AVBufferRef *hw_device_ctx = nullptr;
+        if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0) == 0) {
             video_codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
-            video_codec_ctx->get_format = get_vaapi_format;
+            av_buffer_unref(&hw_device_ctx);
         }
-        video_codec_ctx->thread_count = 0; 
+        video_codec_ctx->thread_count = 0;
         video_codec_ctx->thread_type = FF_THREAD_FRAME; // Or FF_THREAD_SLICE
         avcodec_parameters_to_context(video_codec_ctx, codec_params);
         avcodec_open2(video_codec_ctx, codec, nullptr);
@@ -429,7 +434,6 @@ public:
         avformat_close_input(&format_ctx);
         av_frame_free(&frame);
         av_frame_free(&video_frame);
-        av_buffer_unref(&hw_device_ctx);
         swr_free(&swr_ctx);
         sws_free_context(&sws_ctx);
         audio_stream_index = -1;
@@ -475,7 +479,7 @@ public:
         return seek_result;
     }
 
-    std::vector<ChapterData> ReadChapters() {
+    std::vector<ChapterData> read_chapters() {
         std::vector<ChapterData> chapter_list;
 
         // 1. Check if the file actually contains any chapters
@@ -483,6 +487,7 @@ public:
             return chapter_list;
         }
 
+        double start_time = get_start_time();
         // 2. Iterate through the chapters array
         for (unsigned int i = 0; i < format_ctx->nb_chapters; i++) {
             AVChapter* chapter = format_ctx->chapters[i];
@@ -490,7 +495,7 @@ public:
 
             // 3. Convert timestamps from the chapter's unique timebase into seconds
             double timebase_factor = av_q2d(chapter->time_base);
-            data.start_time = chapter->start * timebase_factor;
+            data.start_time = start_time;
             data.end_time   = chapter->end * timebase_factor;
 
             // 4. Extract the chapter title string from the metadata dictionary
@@ -503,6 +508,7 @@ public:
             }
 
             chapter_list.push_back(data);
+            start_time = data.end_time;
         }
 
         return chapter_list;
@@ -523,16 +529,6 @@ public:
 
         std::cerr << "Failed to get HW surface format.\n";
         return AV_PIX_FMT_NONE;
-    }
-
-    int init_vaapi_device() {
-        // This looks up the default DRI device (e.g., /dev/dri/renderD128)
-        int err = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0);
-        if (err < 0) {
-            std::cerr << "Failed to create VA-API hardware device.\n";
-            return err;
-        }
-        return 0;
     }
 
     void print_error_str(int err) {
@@ -558,7 +554,6 @@ private:
     AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
     AVFrame* video_frame = nullptr;
-    AVBufferRef *hw_device_ctx = NULL;
     std::vector<Subtitle> subtitles;
     std::vector<std::string> sub_lang_pref = {"en", "eng", "ja", "jpn"};
     std::vector<std::string> audio_lang_pref = {"ja", "jpn", "en", "eng"};
@@ -571,10 +566,12 @@ private:
     AVBufferPool *converted_pool = nullptr;
 
 public:
-    double get_duration() const { return duration; }
-    double get_video_time_base() const { return video_time_base; }
-    double get_audio_time_base() const { return audio_time_base; }
-    double get_subtitle_time_base() const { return subtitle_time_base; }
+    auto get_duration() const { return duration; }
+    auto get_video_time_base() const { return video_time_base; }
+    auto get_audio_time_base() const { return audio_time_base; }
+    auto get_subtitle_time_base() const { return subtitle_time_base; }
+    auto get_audio_channels() const { return audio_codec_ctx->ch_layout.nb_channels; }
+    auto get_audio_sample_rate() const { return audio_codec_ctx->sample_rate; }
 #ifdef _VIDEO_CONVERTER_THREAD_
     PacketQueue video_packet_queue;
 #endif

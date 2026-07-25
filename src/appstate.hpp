@@ -200,13 +200,13 @@ struct AppState {
 
         if (video.find_audio_stream()) {
             if (video.open_audio_decoder()) {
-                video.setup_swr_context();
+//                video.setup_swr_context();
 
                 int count = 0;
                 auto *devices = SDL_GetAudioPlaybackDevices(&count);
                 if (count > 0) {
-                    SDL_AudioSpec target_spec = { SDL_AUDIO_S16LE, 2, 44100 }; // Standard CD quality format
-                    auto stream = SDL_CreateAudioStream(&target_spec, &target_spec);
+                    SDL_AudioSpec src_spec = { SDL_AUDIO_F32, video.get_audio_channels(), video.get_audio_sample_rate() };
+                    auto stream = SDL_CreateAudioStream(&src_spec, NULL);
                     if (!stream) {
                         SDL_Log("Failed to create audio stream: %s", SDL_GetError());
                         return false;
@@ -220,7 +220,7 @@ struct AppState {
                     audio_stream.reset(stream);
                     audio_device_id = dev_id;
                     SDL_BindAudioStream(dev_id, audio_stream.get());
-                    SDL_ResumeAudioDevice(dev_id);
+//                    SDL_ResumeAudioDevice(dev_id);
                 }
                 else
                     SDL_Log("Audio Error: %s", SDL_GetError());
@@ -241,7 +241,7 @@ struct AppState {
             }
         }
 
-        chapter_list = video.ReadChapters();
+        chapter_list = video.read_chapters();
         auto subtitle_ctx = video.get_subtitle_ctx();
         if (subtitle_ctx)
             ass.init(img_w, img_h, subtitle_ctx);
@@ -330,22 +330,30 @@ struct AppState {
                 if (audio_stream) {
 //                    printf("pts: %f, play_time: %f, looping: %i\n", frame->pts * audio_time_base, play_time, is_looping);
                     if (is_seeking) {
-                        if ((frame->pts + frame->duration) * video.get_audio_time_base() <= seek_time) {
+//                        if ((frame->pts + frame->duration) * video.get_audio_time_base() <= seek_time) {
+                        if (frame->pts * video.get_audio_time_base() < seek_time) {
                             return;
+                        } else {
+                            is_seeking = false;
+                            need_play_time = true;
                         }
                     }
                     if (!need_play_time && frame->pts * video.get_audio_time_base() < play_time)
                         return;
-                    video.convert_audio_frame(frame, &audio_buf);
+//                    video.convert_audio_frame(frame, &audio_buf);
                     if (need_play_time) {
                         play_time = frame->pts * video.get_audio_time_base();
                         set_play_time(play_time);
                     }
                     // Feed the raw sound bytes to SDL3's background mixer
-                    if (!SDL_PutAudioStreamData(audio_stream.get(), audio_buf.buf, audio_buf.data_size)) {
-                        SDL_Log("Audio Stream Error: %s", SDL_GetError());
+                    if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frame->format))) {
+                        // Perfect for FLTP (extracts from any standard video file container)
+                        SDL_PutAudioStreamPlanarData(audio_stream.get(), (const void * const *)frame->data, frame->ch_layout.nb_channels, frame->nb_samples);
+                    } else {
+                        // Perfect for packed/interleaved layouts (like FLT, S16, S32)
+                        int size_in_bytes = frame->nb_samples * frame->ch_layout.nb_channels * av_get_bytes_per_sample(static_cast<AVSampleFormat>(frame->format));
+                        SDL_PutAudioStreamData(audio_stream.get(), frame->data[0], size_in_bytes);
                     }
-//                    printf("SDL_GetAudioStreamQueued: %i\n", SDL_GetAudioStreamQueued(audio_stream.get()));
                 }
             }, [&](AVPacket *packet) -> void {
 #ifdef _VIDEO_CONVERTER_THREAD_
@@ -359,7 +367,7 @@ struct AppState {
 #else
                 video.feed_video_frame(packet, [&](AVFrame *frame){
                     AVFrame *new_frame = nullptr;
-                    if (frame->hw_frames_ctx) {
+                    if (frame->format == AV_PIX_FMT_VAAPI) {
                         new_frame = video.video_frame_queue.alloc();
                         new_frame->format = video.pixel_format;
                         av_hwframe_transfer_data(new_frame, frame, 0);
@@ -424,6 +432,7 @@ struct AppState {
                             continue;
                         } else {
                             is_seeking = false;
+                            need_play_time = true;
                         }
                     }
                     auto frame_time = frame->pts * video.get_video_time_base();
@@ -551,7 +560,6 @@ struct AppState {
                     is_seeking = true;
                     seek_time = ts;
                     recycle_frame_buffers();
-                    set_play_time(ts);
                     read_next_frame(ts);
                     fetch_status = 1;
                 } else
