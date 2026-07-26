@@ -49,7 +49,6 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
 
     auto state = new AppState();
     *appstate = state;
-    state->open_file(argv[1]);
 
     Uint32 window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIDDEN;
     state->window.reset(SDL_CreateWindow("miv", 800, 600, window_flags));
@@ -60,7 +59,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
 
     SDL_SetWindowHitTest(state->window.get(), WindowHitTest, nullptr);
 
-    if (!state->load_image_at_index()) { return SDL_APP_FAILURE; }
+    if (!state->open_file(argv[1])) { return SDL_APP_FAILURE; }
     SDL_ShowWindow(state->window.get());
 
     gui.init(state);
@@ -234,9 +233,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             const char* dropped_file_path = event->drop.data;
             if (dropped_file_path) {
                 std::cout << "File dropped: " << dropped_file_path << std::endl;
-                if (state->open_file(dropped_file_path)) {
-                    state->load_image_at_index();
-                }
+                state->open_file(dropped_file_path);
             }
         }
             break;

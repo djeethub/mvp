@@ -515,7 +515,7 @@ public:
     }
 
     double get_start_time() {
-        return static_cast<double>(format_ctx->start_time) * AV_TIME_BASE;
+        return static_cast<double>(format_ctx->start_time * AV_TIME_BASE);
     }
 
     static enum AVPixelFormat get_vaapi_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {

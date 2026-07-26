@@ -47,7 +47,6 @@ struct Subtitle {
 
 struct DirData {
     std::string parent_dir;
-    std::string file_name;
     std::vector<std::string> list;
     int idx;
 };
@@ -74,8 +73,7 @@ struct AppState {
     float video_pan_x = 0.0;
     float video_pan_y = 0.0;
     bool is_loop = true;
-    bool need_play_time = true;
-    bool is_seeking = false;
+    bool is_seeking = true;
     double seek_time;
     std::mutex fetch_mutex;
     std::condition_variable fetch_cv;
@@ -135,7 +133,7 @@ struct AppState {
         audio_stream.reset();
         video.close();
         clear_frame_buffers();
-        need_play_time = true;
+        is_seeking = true;
     }
 
     bool shutdown() {
@@ -153,9 +151,18 @@ struct AppState {
         return true;
     }
 
-    static DirData *dir_worker(DirData *data) {
-        auto& list = data->list;
+    static DirData *dir_worker(const std::string file_path) {
+        auto data = new DirData;
+        fs::path argpath = file_path;
+        if (argpath.has_parent_path()) {
+            data->parent_dir = argpath.parent_path().string();
+            if (data->parent_dir.back() != fs::path::preferred_separator) data->parent_dir.push_back(fs::path::preferred_separator);
+        } else {
+            data->parent_dir = std::string("./");
+        }
+        auto file_name = argpath.filename().string();
 
+        auto& list = data->list;
         // Enumerate directory for supported images
         try {
             for (auto &entry : fs::directory_iterator(data->parent_dir)) {
@@ -169,7 +176,7 @@ struct AppState {
             list.erase(std::unique(list.begin(), list.end()), list.end());
 
             // find initial file index
-            auto it = std::find(list.begin(), list.end(), data->file_name);
+            auto it = std::find(list.begin(), list.end(), file_name);
             if (it != list.end()) data->idx = static_cast<std::size_t>(std::distance(list.begin(), it));
         } catch (...) {
             // filesystem errors -> failure
@@ -184,39 +191,49 @@ struct AppState {
             return false;
         }
 
-        current_index = 0;
-        image_files.clear();
-
         if (dir_future.valid())
             delete dir_future.get();
-        DirData *data = new DirData;
 
-        fs::path argpath = file_path;
-        if (argpath.has_parent_path()) {
-            data->parent_dir = argpath.parent_path().string();
-            if (data->parent_dir.back() != fs::path::preferred_separator) data->parent_dir.push_back(fs::path::preferred_separator);
-        } else {
-            data->parent_dir = std::string("./");
+        if (open_video(file_path)) {
+            dir_future = std::async(dir_worker, file_path);
+            image_files.clear();
+            image_files.push_back(fs::path(file_path).filename().string());
+            current_index = 0;
         }
-        data->file_name = argpath.filename().string();
-        dir_future = std::async(dir_worker, data);
-
-        image_files.push_back(data->file_name);
-        parent_dir = data->parent_dir;
 
         return true;
     }
 
-    bool load_image_at_index() {
-        if (image_files.empty() || !renderer) return false;
+    bool open_next_file(bool next) {
+        if (dir_future.valid())
+        {
+            auto *data = dir_future.get();
+            image_files = std::move(data->list);
+            parent_dir = std::move(data->parent_dir);
+            current_index = data->idx;
+            delete data;
+        }
 
+        if (next) {
+            if (current_index < image_files.size() - 1) {
+                current_index++;
+            } else
+                return false;
+        } else {
+            if (current_index > 0) {
+                current_index--;
+            } else
+                return false;
+        }
+
+        return open_video(fs::path(parent_dir) / image_files[current_index]);
+    }
+
+    bool open_video(const std::string& file_path) {
         std::unique_lock<std::mutex> lock(fetch_mutex);
         reset_runtime_state();
 
-        const auto &filename = image_files[current_index];
-        fs::path full = fs::path(parent_dir) / filename;
-
-        if (!video.open(full.string())) {
+        if (!video.open(file_path)) {
             return false;
         }
 
@@ -280,12 +297,13 @@ struct AppState {
         }
         
         resize_window();
-        SDL_SetWindowTitle(window.get(), filename.c_str());
+        SDL_SetWindowTitle(window.get(), file_path.c_str());
 
 #ifdef _VIDEO_CONVERTER_THREAD_
         video_converter.start();
 #endif
-        read_next_frame(video.get_start_time());
+        seek_time = video.get_start_time();
+        read_next_frame(seek_time);
         fetch_status = 1;
         if (!fetch_thread.joinable()) {
             fetch_thread = std::thread(fetch_thread_worker, this);
@@ -294,30 +312,6 @@ struct AppState {
         lock.unlock();
         fetch_cv.notify_one();
         return true;
-    }
-
-    bool open_next_file(bool next) {
-        if (dir_future.valid())
-        {
-            auto *data = dir_future.get();
-            image_files = std::move(data->list);
-            current_index = data->idx;
-            delete data;
-        }
-
-        if (next) {
-            if (current_index < image_files.size() - 1) {
-                current_index++;
-                return load_image_at_index();
-            }
-        } else {
-            if (current_index > 0) {
-                current_index--;
-                return load_image_at_index();
-            }
-        }
-
-        return false;
     }
 
     // Helper to isolate the Dialogue payload and extract the text
@@ -364,8 +358,6 @@ struct AppState {
 
     int read_next_frame(double play_time) {
         int read_result = 0;
-        if (need_play_time)
-            play_time = -1.0;
         while (true) {
 #ifdef _VIDEO_CONVERTER_THREAD_
             auto video_frame_count = video_converter.count_video_packet();
@@ -378,13 +370,11 @@ struct AppState {
                 if (audio_stream) {
 //                    printf("pts: %f, play_time: %f, looping: %i\n", frame->pts * audio_time_base, play_time, is_looping);
                     if (is_seeking) {
-                        set_seeking(false);
-                    }
-//                    video.convert_audio_frame(frame, &audio_buf);
-                    if (need_play_time) {
                         play_time = frame->pts * video.get_audio_time_base();
+                        set_seeking(false, play_time);
                         set_play_time(play_time);
                     }
+//                    video.convert_audio_frame(frame, &audio_buf);
                     // Feed the raw sound bytes to SDL3's background mixer
                     if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frame->format))) {
                         // Perfect for FLTP (extracts from any standard video file container)
@@ -420,16 +410,14 @@ struct AppState {
                             fprintf(stderr, "Mapping to DRM PRIME failed!\n");
                             av_frame_free(&new_frame);
                         }*/
-                    } else {
-                        if (frame->format != video.pixel_format) {
+                    } else if (frame->format != video.pixel_format) {
                             new_frame = video.alloc_converted_frame();
                             video.scale_video_frame(frame, new_frame);
                             new_frame->pts = frame->pts;
                             new_frame->duration = frame->duration;
-                        } else {
-                            new_frame = video.video_frame_queue.alloc();
-                            av_frame_move_ref(new_frame, frame);
-                        }
+                    } else {
+                        new_frame = video.video_frame_queue.alloc();
+                        av_frame_move_ref(new_frame, frame);
                     }
                     video.video_frame_queue.push(new_frame);
                 });
@@ -456,7 +444,7 @@ struct AppState {
         return read_result;
     }
 
-    bool check_next_frame(double curr_ticks) {
+    bool check_next_frame(double play_time) {
         if (video.is_video()) {
             AVFrame *frame_to_display = nullptr;
             bool need_fetch = false;
@@ -469,20 +457,18 @@ struct AppState {
                     auto frame = video.video_frame_queue.front();
                     auto frame_time = frame->pts * video.get_video_time_base();
                     if (is_seeking) {
-                        if (frame_time < curr_ticks - tick_diff) {
+                        if (frame_time < play_time) {
                             video.video_frame_queue.pop();
                             av_frame_free(&frame);
                             need_fetch = true;
                             continue;
                         } else {
-                            set_seeking(false);
+                            play_time = frame_time;
+                            set_seeking(false, play_time);
+                            set_play_time(play_time);
                         }
                     }
-                    if (need_play_time || frame_time + tick_diff <= curr_ticks) {
-//                        printf("pts: %i\n", frame->pts);
-                        if (need_play_time) {
-                            set_play_time(frame_time);
-                        }
+                    if (frame_time <= play_time) {
                         if (frame_to_display)
                             av_frame_free(&frame_to_display);
                         frame_to_display = frame;
@@ -526,9 +512,8 @@ struct AppState {
     {
         if (is_paused && !is_seeking)
             return 77777;
-        auto curr_ticks = get_ticks();
-        check_next_frame(curr_ticks);
-        auto play_time = curr_ticks - tick_diff;
+        double play_time = is_seeking ? seek_time : get_play_time();
+        check_next_frame(play_time);
         if (video.is_video()) {
             auto rlt = read_next_frame(play_time);
             if (rlt < 0) {
@@ -539,7 +524,6 @@ struct AppState {
                     if (is_loop && video.video_frame_queue.empty()) {
 #endif
                         if (seek(video.get_start_time(), false)) {
-                            need_play_time = true;
                             if (audio_stream) {
                                 auto bytes = SDL_GetAudioStreamQueued(audio_stream.get());
                                 if (bytes > 0) {
@@ -565,17 +549,15 @@ struct AppState {
             }
             if (is_seeking)
                 return 0.001;
-            curr_ticks = get_ticks();
-            curr_ticks -= tick_diff;
 #ifdef _VIDEO_CONVERTER_THREAD_
             auto frame_time = video_converter.next_play_time();
 #else
             auto frame_time = video.video_frame_queue.front()->pts * video.get_video_time_base();
 #endif
-            interval = frame_time - curr_ticks;
+            interval = frame_time - get_play_time();
 //            printf("interval: %f\n", interval);
             if (interval <= 0)
-                interval = 0.02;
+                interval = 0.01;
         } else {
             auto rlt = read_next_frame(play_time);
             if (rlt < 0) {
@@ -608,13 +590,14 @@ struct AppState {
             fetch_cv.notify_one();
             return true;
         } else if (video.seek(ts) >= 0) {
-            is_seeking = false;
+            is_seeking = true;
+            seek_time = ts;
             return true;
         }
         return false;
     }
 
-    void set_seeking(bool set, double ts = 0.0) {
+    void set_seeking(bool set, double ts) {
         if (set) {
             is_seeking = true;
             seek_time = ts;
@@ -622,8 +605,8 @@ struct AppState {
             recycle_frame_buffers();
         } else {
             is_seeking = false;
+            seek_time = ts;
             video.set_skip(AVDISCARD_DEFAULT, AVDISCARD_DEFAULT, AVDISCARD_DEFAULT);
-            need_play_time = true;
         }
     }
 
@@ -698,8 +681,6 @@ struct AppState {
     void set_play_time(double play_time)
     {
         tick_diff = get_ticks() - play_time;
-        seek_time = play_time;
-        need_play_time = false;
     }
 
     double get_play_time() const {

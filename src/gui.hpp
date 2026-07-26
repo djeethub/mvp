@@ -263,13 +263,13 @@ class AppGui {
             {
                 if (ImGui::MenuItem("Next File", ".", false, state->image_files.size() > 1))
                 {
-                    state->current_index = (state->current_index + 1) % state->image_files.size();
-                    state->load_image_at_index();
+                    if (state->open_next_file(true))
+                        show_noti(state->get_file_name());
                 }
                 if (ImGui::MenuItem("Previous File", ",", false, state->image_files.size() > 1))
                 {
-                    state->current_index = (state->current_index + state->image_files.size() - 1) % state->image_files.size();
-                    state->load_image_at_index();
+                    if (state->open_next_file(false))
+                        show_noti(state->get_file_name());
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Open File Location", "Ctrl+L"))
