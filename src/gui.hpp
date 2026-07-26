@@ -180,6 +180,13 @@ class AppGui {
             return m > 0 ? std::format("{}:{:02}", m, n % 60) : std::to_string(n);
         }
 
+        std::string lang_string(const std::string& title, const std::string& lang) {
+            if (title.empty()) {
+                return lang;
+            } else
+                return std::format("{} ({})", title, lang);
+        }
+
         SDL_AppResult draw()
         {
             auto curr_ticks = SDL_GetTicks();
@@ -293,7 +300,7 @@ class AppGui {
                     ImGui::Separator();
                     auto tracks = state->video.get_audio_tracks();
                     for (const auto& data : tracks) {
-                        if (ImGui::MenuItem(std::format("{} ({})", data.title, data.lang).c_str(), nullptr, data.idx == idx, true))
+                        if (ImGui::MenuItem(lang_string(data.title, data.lang).c_str(), nullptr, data.idx == idx, true))
                         {
                             state->select_audio(data.idx);
                         }
@@ -310,7 +317,7 @@ class AppGui {
                     ImGui::Separator();
                     auto tracks = state->video.get_subtitle_tracks();
                     for (const auto& data : tracks) {
-                        if (ImGui::MenuItem(std::format("{} ({})", data.title, data.lang).c_str(), nullptr, data.idx == idx, true))
+                        if (ImGui::MenuItem(lang_string(data.title, data.lang).c_str(), nullptr, data.idx == idx, true))
                         {
                             state->select_subtitle(data.idx);
                         }

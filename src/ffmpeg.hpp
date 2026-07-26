@@ -148,7 +148,7 @@ public:
 
     std::string get_stream_metadata(const AVStream* stream, const char *key) {
         if (!stream || !stream->metadata) {
-            return "Unknown";
+            return "";
         }
         
         // Look up the key in the stream's metadata dictionary
@@ -157,7 +157,7 @@ public:
             return std::string(entry->value);
         }
         
-        return "Unknown";
+        return "";
     }    
 
     bool find_subtitle_stream()
@@ -170,13 +170,13 @@ public:
                 subtitle.lang = get_stream_metadata(stream, "language");
                 subtitle.title = get_stream_metadata(stream, "title");
                 subtitle.codec_id = stream->codecpar->codec_id;
-                subtitles.push_back(subtitle);
+                subtitle_list.push_back(subtitle);
                 std::cout << std::format("Subtitle: {} ({})\n", subtitle.title, subtitle.lang);
             }
         }
 
         for (const auto& val : sub_lang_pref) {
-            for (const auto& sub : subtitles) {
+            for (const auto& sub : subtitle_list) {
                 if (sub.lang == val) {
                     subtitle_stream_idx = sub.idx;
                     return true;
@@ -196,13 +196,13 @@ public:
                 data.lang = get_stream_metadata(stream, "language");
                 data.title = get_stream_metadata(stream, "title");
                 data.codec_id = stream->codecpar->codec_id;
-                audios.push_back(data);
+                audio_list.push_back(data);
                 std::cout << std::format("Audio: {} ({})\n", data.title, data.lang);
             }
         }
 
         for (const auto& val : audio_lang_pref) {
-            for (const auto& data : audios) {
+            for (const auto& data : audio_list) {
                 if (data.lang == val) {
                     audio_stream_index = data.idx;
                     return true;
@@ -210,8 +210,8 @@ public:
             }
         }
 
-        if (!audios.empty()) {
-            audio_stream_index = audios.front().idx;
+        if (!audio_list.empty()) {
+            audio_stream_index = audio_list.front().idx;
             return true;
         }
         std::cerr << "Could not find an audio stream.\n";
@@ -440,7 +440,8 @@ public:
         video_stream_index = -1;
         subtitle_stream_idx = -1;
         av_buffer_pool_uninit(&converted_pool);
-        subtitles.clear();
+        subtitle_list.clear();
+        audio_list.clear();
     }
 
     void get_video_dimensions(int& width, int& height) const {
@@ -572,8 +573,8 @@ private:
     AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
     AVFrame* video_frame = nullptr;
-    std::vector<AudioData> subtitles;
-    std::vector<AudioData> audios;
+    std::vector<AudioData> subtitle_list;
+    std::vector<AudioData> audio_list;
     std::vector<std::string> sub_lang_pref = {"en", "eng", "ja", "jpn"};
     std::vector<std::string> audio_lang_pref = {"ja", "jpn", "en", "eng"};
     int subtitle_stream_idx = -1;
@@ -596,8 +597,8 @@ public:
         video_codec_ctx->skip_loop_filter = loop_filter;
         video_codec_ctx->skip_idct = idct;
     }
-    auto get_subtitle_tracks() const { return subtitles; }
-    auto get_audio_tracks() const { return audios; }
+    auto get_subtitle_tracks() const { return subtitle_list; }
+    auto get_audio_tracks() const { return audio_list; }
     auto get_subtitle_index() const { return subtitle_stream_idx; }
     auto get_audio_index() const { return audio_stream_index; }
 #ifdef _VIDEO_CONVERTER_THREAD_
