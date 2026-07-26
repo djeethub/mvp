@@ -43,7 +43,7 @@ struct AudioBuffer {
     }
 };
 
-struct Subtitle {
+struct AudioData {
     int idx;
     std::string lang;
     std::string title;
@@ -162,57 +162,57 @@ public:
 
     bool find_subtitle_stream()
     {
-        for (const auto& val : sub_lang_pref) {
-            for (unsigned int i = 0; i < format_ctx->nb_streams; i++) {
-                auto stream = format_ctx->streams[i];
-                if (stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
-                    auto lang = get_stream_metadata(stream, "language");
-                    if (lang == val) {
-                        auto subtitle = Subtitle();
-                        subtitle.idx = i;
-                        subtitle.lang = lang;
-                        subtitle.title = get_stream_metadata(stream, "title");
-                        subtitle.codec_id = stream->codecpar->codec_id;
-                        subtitles.push_back(subtitle);
-                        std::cout << std::format("Subtitle: {} ({})\n", subtitle.title, subtitle.lang);
-                        break;
-                    }
-                }
+        for (unsigned int i = 0; i < format_ctx->nb_streams; i++) {
+            auto stream = format_ctx->streams[i];
+            if (stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
+                auto subtitle = AudioData();
+                subtitle.idx = i;
+                subtitle.lang = get_stream_metadata(stream, "language");
+                subtitle.title = get_stream_metadata(stream, "title");
+                subtitle.codec_id = stream->codecpar->codec_id;
+                subtitles.push_back(subtitle);
+                std::cout << std::format("Subtitle: {} ({})\n", subtitle.title, subtitle.lang);
             }
         }
 
-        if (!subtitles.empty())
-        {
-            subtitle_stream_idx = subtitles.front().idx;
-            return true;
+        for (const auto& val : sub_lang_pref) {
+            for (const auto& sub : subtitles) {
+                if (sub.lang == val) {
+                    subtitle_stream_idx = sub.idx;
+                    return true;
+                }
+            }
         }
         return false;
     }
 
     bool find_audio_stream()
     {
+        for (unsigned int i = 0; i < format_ctx->nb_streams; i++) {
+            auto stream = format_ctx->streams[i];
+            if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+                auto data = AudioData();
+                data.idx = i;
+                data.lang = get_stream_metadata(stream, "language");
+                data.title = get_stream_metadata(stream, "title");
+                data.codec_id = stream->codecpar->codec_id;
+                audios.push_back(data);
+                std::cout << std::format("Audio: {} ({})\n", data.title, data.lang);
+            }
+        }
+
         for (const auto& val : audio_lang_pref) {
-            for (unsigned int i = 0; i < format_ctx->nb_streams; i++) {
-                auto stream = format_ctx->streams[i];
-                if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-                    auto lang = get_stream_metadata(stream, "language");
-                    if (lang == val) {
-                        audio_stream_index = i;
-                        auto title = get_stream_metadata(stream, "title");
-                        std::cout << std::format("Audio: {} ({})\n", title, lang);
-                        return true;
-                    }
+            for (const auto& data : audios) {
+                if (data.lang == val) {
+                    audio_stream_index = data.idx;
+                    return true;
                 }
             }
         }
 
-        for (unsigned int i = 0; i < format_ctx->nb_streams; i++)
-        {
-            if (format_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
-            {
-                audio_stream_index = i;
-                return true;
-            }
+        if (!audios.empty()) {
+            audio_stream_index = audios.front().idx;
+            return true;
         }
         std::cerr << "Could not find an audio stream.\n";
         return false;
@@ -541,6 +541,24 @@ public:
         return subtitle_codec_ctx;
     }
 
+    void select_subtitle(int idx) {
+        if (subtitle_stream_idx != idx) {
+            avcodec_free_context(&subtitle_codec_ctx);
+            subtitle_stream_idx = idx;
+            if (idx >= 0)
+                open_subtitle_decoder();
+        }
+    }
+
+    void select_audio(int idx) {
+        if (audio_stream_index != idx) {
+            avcodec_free_context(&audio_codec_ctx);
+            audio_stream_index = idx;
+            if (idx >= 0)
+                open_audio_decoder();
+        }
+    }
+
 private:
     AVFormatContext* format_ctx = nullptr;
     AVCodecContext* audio_codec_ctx = nullptr;
@@ -554,7 +572,8 @@ private:
     AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
     AVFrame* video_frame = nullptr;
-    std::vector<Subtitle> subtitles;
+    std::vector<AudioData> subtitles;
+    std::vector<AudioData> audios;
     std::vector<std::string> sub_lang_pref = {"en", "eng", "ja", "jpn"};
     std::vector<std::string> audio_lang_pref = {"ja", "jpn", "en", "eng"};
     int subtitle_stream_idx = -1;
@@ -577,6 +596,10 @@ public:
         video_codec_ctx->skip_loop_filter = loop_filter;
         video_codec_ctx->skip_idct = idct;
     }
+    auto get_subtitle_tracks() const { return subtitles; }
+    auto get_audio_tracks() const { return audios; }
+    auto get_subtitle_index() const { return subtitle_stream_idx; }
+    auto get_audio_index() const { return audio_stream_index; }
 #ifdef _VIDEO_CONVERTER_THREAD_
     PacketQueue video_packet_queue;
 #endif

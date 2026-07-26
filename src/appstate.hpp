@@ -24,11 +24,9 @@
 #include "ass.hpp"
 
 // Define a unique event ID for our frame ticker
-#define USEREVENT_NEXT_FRAME (SDL_EVENT_USER + 1)
-#define USEREVENT_SUBTITLE (SDL_EVENT_USER + 2)
-#define USEREVENT_SUBTITLE_ASS (SDL_EVENT_USER + 4)
-#define USEREVENT_QUIT (SDL_EVENT_USER + 3)
-#define USEREVENT_DIR (SDL_EVENT_USER + 5)
+Uint32 USEREVENT_NEXT_FRAME;
+Uint32 USEREVENT_SUBTITLE_ASS;
+#define NUM_USEREVENT   2
 
 namespace fs = std::filesystem;
 
@@ -90,6 +88,9 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
         video_converter.video = &video;
 #endif
+        auto n = SDL_RegisterEvents(NUM_USEREVENT);
+        USEREVENT_NEXT_FRAME = n++;
+        USEREVENT_SUBTITLE_ASS = n++;
     }
 
     ~AppState()
@@ -364,26 +365,26 @@ struct AppState {
 #else
             auto video_frame_count = video.video_frame_queue.size();
 #endif
-            if (video_frame_count >= 1 && (!audio_stream || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
+            if (video_frame_count >= 2 && (!video.is_audio() || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
                 break;
             read_result = video.feed_frame(play_time, [&](AVFrame *frame) -> void {
-                if (audio_stream) {
+                if (!audio_stream)
+                    return;
 //                    printf("pts: %f, play_time: %f, looping: %i\n", frame->pts * audio_time_base, play_time, is_looping);
-                    if (is_seeking) {
-                        play_time = frame->pts * video.get_audio_time_base();
-                        set_seeking(false, play_time);
-                        set_play_time(play_time);
-                    }
+                if (is_seeking) {
+                    play_time = frame->pts * video.get_audio_time_base();
+                    set_seeking(false, play_time);
+                    set_play_time(play_time);
+                }
 //                    video.convert_audio_frame(frame, &audio_buf);
-                    // Feed the raw sound bytes to SDL3's background mixer
-                    if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frame->format))) {
-                        // Perfect for FLTP (extracts from any standard video file container)
-                        SDL_PutAudioStreamPlanarData(audio_stream.get(), (const void * const *)frame->data, frame->ch_layout.nb_channels, frame->nb_samples);
-                    } else {
-                        // Perfect for packed/interleaved layouts (like FLT, S16, S32)
-                        int size_in_bytes = frame->nb_samples * frame->ch_layout.nb_channels * av_get_bytes_per_sample(static_cast<AVSampleFormat>(frame->format));
-                        SDL_PutAudioStreamData(audio_stream.get(), frame->data[0], size_in_bytes);
-                    }
+                // Feed the raw sound bytes to SDL3's background mixer
+                if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frame->format))) {
+                    // Perfect for FLTP (extracts from any standard video file container)
+                    SDL_PutAudioStreamPlanarData(audio_stream.get(), (const void * const *)frame->data, frame->ch_layout.nb_channels, frame->nb_samples);
+                } else {
+                    // Perfect for packed/interleaved layouts (like FLT, S16, S32)
+                    int size_in_bytes = frame->nb_samples * frame->ch_layout.nb_channels * av_get_bytes_per_sample(static_cast<AVSampleFormat>(frame->format));
+                    SDL_PutAudioStreamData(audio_stream.get(), frame->data[0], size_in_bytes);
                 }
             }, [&](AVPacket *packet) -> void {
 #ifdef _VIDEO_CONVERTER_THREAD_
@@ -756,5 +757,22 @@ struct AppState {
 
     auto get_file_name() {
         return current_index >= 0 ? image_files[current_index] : nullptr;
+    }
+
+    void select_subtitle(int idx) {
+        std::unique_lock<std::mutex> lock(fetch_mutex);
+        if (video.get_subtitle_index() != idx) {
+            ass.flush();
+            video.select_subtitle(idx);
+        }
+    }
+
+    void select_audio(int idx) {
+        std::unique_lock<std::mutex> lock(fetch_mutex);
+        if (video.get_audio_index() != idx) {
+//            if (audio_stream)
+//                SDL_FlushAudioStream(audio_stream.get());
+            video.select_audio(idx);
+        }
     }
 };

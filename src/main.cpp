@@ -72,36 +72,23 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     auto *state = static_cast<AppState*>(appstate);
     ImGui_ImplSDL3_ProcessEvent(event);
 
+    if (event->type == USEREVENT_NEXT_FRAME) {
+        auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
+        if (video_frame) {
+//            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
+            SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
+            av_frame_free(&video_frame);
+        }
+        return SDL_APP_CONTINUE;
+    } else if (event->type == USEREVENT_SUBTITLE_ASS) {
+        auto subtitle = state->subtitle.load(std::memory_order_acquire);
+        if (subtitle) {
+            state->ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
+        }
+        return SDL_APP_CONTINUE;
+    }
+
     switch (event->type) {
-        case USEREVENT_NEXT_FRAME:
-        {
-            auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
-            if (video_frame) {
-    //            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
-                SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
-                av_frame_free(&video_frame);
-            }
-        }
-            break;
-
-        case USEREVENT_SUBTITLE:
-        {
-            auto subtitle = state->subtitle.load(std::memory_order_acquire);
-            if (subtitle) {
-                gui.show_subtitle(subtitle->text, static_cast<uint64_t>(subtitle->duration * 1000));
-            }
-        }
-            break;
-
-        case USEREVENT_SUBTITLE_ASS:
-        {
-            auto subtitle = state->subtitle.load(std::memory_order_acquire);
-            if (subtitle) {
-                state->ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
-            }
-        }
-            break;
-
         case SDL_EVENT_QUIT:
             return SDL_APP_SUCCESS;
 

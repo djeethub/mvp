@@ -261,6 +261,7 @@ class AppGui {
 
             if (ImGui::BeginPopup("mymenu"))
             {
+/*                
                 if (ImGui::MenuItem("Next File", ".", false, state->image_files.size() > 1))
                 {
                     if (state->open_next_file(true))
@@ -270,6 +271,51 @@ class AppGui {
                 {
                     if (state->open_next_file(false))
                         show_noti(state->get_file_name());
+                }*/
+                if (ImGui::MenuItem(state->is_paused ? "Resume" : "Pause", "Space", false, true))
+                {
+                    state->pause();
+                    show_noti(state->is_paused ? "Paused" : "Resumed");
+                    if (state->is_paused) {
+                        SDL_Event event;
+                        SDL_zero(event);
+                        event.type = SDL_EVENT_FIRST;
+                        SDL_PushEvent(&event);
+                    }
+                }
+                if (ImGui::BeginMenu("Audio"))
+                {
+                    auto idx = state->video.get_audio_index();
+                    if (ImGui::MenuItem("None", nullptr, idx < 0, true))
+                    {
+                        state->select_audio(-1);
+                    }
+                    ImGui::Separator();
+                    auto tracks = state->video.get_audio_tracks();
+                    for (const auto& data : tracks) {
+                        if (ImGui::MenuItem(std::format("{} ({})", data.title, data.lang).c_str(), nullptr, data.idx == idx, true))
+                        {
+                            state->select_audio(data.idx);
+                        }
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Subtitles"))
+                {
+                    auto idx = state->video.get_subtitle_index();
+                    if (ImGui::MenuItem("None", nullptr, idx < 0, true))
+                    {
+                        state->select_subtitle(-1);
+                    }
+                    ImGui::Separator();
+                    auto tracks = state->video.get_subtitle_tracks();
+                    for (const auto& data : tracks) {
+                        if (ImGui::MenuItem(std::format("{} ({})", data.title, data.lang).c_str(), nullptr, data.idx == idx, true))
+                        {
+                            state->select_subtitle(data.idx);
+                        }
+                    }
+                    ImGui::EndMenu();
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Open File Location", "Ctrl+L"))
