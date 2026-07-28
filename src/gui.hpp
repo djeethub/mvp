@@ -181,8 +181,8 @@ class AppGui {
         }
 
         std::string lang_string(const std::string& title, const std::string& lang) {
-            if (title.empty()) {
-                return lang;
+            if (lang.empty()) {
+                return title;
             } else
                 return std::format("{} ({})", title, lang);
         }
@@ -240,7 +240,7 @@ class AppGui {
             }
 
             ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5, io.DisplaySize.y * 0.9), 0, ImVec2(0.5, 0.5));
-            auto size = ImVec2(io.DisplaySize.x * 0.9, io.DisplaySize.y * 0.1);
+            auto size = ImVec2(io.DisplaySize.x * 0.92, io.DisplaySize.y * 0.1);
             ImGui::SetNextWindowSize(size);
             ImGui::Begin("Slider", nullptr,
                         ImGuiWindowFlags_NoDecoration |
@@ -249,9 +249,9 @@ class AppGui {
                         ImGuiWindowFlags_NoFocusOnAppearing |
                         ImGuiWindowFlags_NoNav |
                         ImGuiWindowFlags_NoMove);
-            if (ImGui::IsWindowHovered()) {
+            auto duration = state->video.get_duration();
+            if (ImGui::IsWindowHovered() && duration > 0.05) {
                 auto play_time = state->get_play_time();
-                auto duration = state->video.get_duration();
                 float v = play_time / duration;
                 ImGui::SetNextItemWidth(-1.0f);
                 if (ImGui::SliderFloat("##Seek", &v, 0.0f, 1.0f, std::format("{} / {}", time_str(play_time), time_str(duration - play_time)).c_str())) {

@@ -16,7 +16,11 @@ extern "C" {
 #include <libavutil/dict.h>
 }
 
+#include "videoscaler.hpp"
+
 namespace ff {
+
+const AVPixelFormat finalPixelFormat = AV_PIX_FMT_NV12;
 
 struct ChapterData {
     std::string title;
@@ -115,8 +119,6 @@ typedef AvQueue<AVFrame *, av_frame_alloc, av_frame_free> FrameQueue;
 
 class VideoFile {
 public:
-    const AVPixelFormat pixel_format = AV_PIX_FMT_NV12;
-
     VideoFile() = default;
     ~VideoFile() {
         close();
@@ -169,6 +171,8 @@ public:
                 subtitle.idx = i;
                 subtitle.lang = get_stream_metadata(stream, "language");
                 subtitle.title = get_stream_metadata(stream, "title");
+                if (subtitle.title.empty())
+                    subtitle.title = std::format("Track {}", i);
                 subtitle.codec_id = stream->codecpar->codec_id;
                 subtitle_list.push_back(subtitle);
                 std::cout << std::format("Subtitle: {} ({})\n", subtitle.title, subtitle.lang);
@@ -195,6 +199,8 @@ public:
                 data.idx = i;
                 data.lang = get_stream_metadata(stream, "language");
                 data.title = get_stream_metadata(stream, "title");
+                if (data.title.empty())
+                    data.title = std::format("Track {}", i);
                 data.codec_id = stream->codecpar->codec_id;
                 audio_list.push_back(data);
                 std::cout << std::format("Audio: {} ({})\n", data.title, data.lang);
@@ -214,7 +220,7 @@ public:
             audio_stream_index = audio_list.front().idx;
             return true;
         }
-        std::cerr << "Could not find an audio stream.\n";
+//        std::cerr << "Could not find an audio stream.\n";
         return false;
     }
 
@@ -228,7 +234,7 @@ public:
                 return true;
             }
         }
-        std::cerr << "Could not find a video stream.\n";
+//        std::cerr << "Could not find a video stream.\n";
         return false;
     }
 
@@ -294,16 +300,6 @@ public:
             return SDL_APP_FAILURE;
         }
         return true;
-    }
-
-    bool setup_sws_context(AVFrame *frame)
-    {
-        sws_free_context(&sws_ctx);
-        sws_ctx = sws_getContext(
-            frame->width, frame->height, static_cast<AVPixelFormat>(frame->format), // True source format
-            frame->width, frame->height, pixel_format,       // True target format
-            SWS_BILINEAR, nullptr, nullptr, nullptr);
-        return sws_ctx != nullptr;
     }
 
     template <typename AudioFeedFunc, typename VideoFeedFunc, typename SubtitleFeedFunc>
@@ -394,37 +390,9 @@ public:
             audio_buf->data_size = 0;
     }
 
-    void scale_video_frame(AVFrame *frame, AVFrame *converted_frame)
+    AVFrame *scale_video_frame(AVFrame *frame, int width, int height)
     {
-        if (!sws_ctx || frame->format != sws_ctx->src_format) {
-            setup_sws_context(frame);
-        }
-        sws_scale(sws_ctx, frame->data, frame->linesize, 0,
-                  video_codec_ctx->height, converted_frame->data, converted_frame->linesize);
-        converted_frame->format = pixel_format;
-    }
-
-    AVFrame *alloc_converted_frame()
-    {
-        AVFrame *frame = av_frame_alloc();
-        frame->format = pixel_format;
-        frame->width  = video_codec_ctx->width;
-        frame->height = video_codec_ctx->height;
-
-        if (!converted_pool) {
-            int buffer_size = av_image_get_buffer_size(static_cast<AVPixelFormat>(frame->format), frame->width, frame->height, 32);
-            converted_pool = av_buffer_pool_init(buffer_size, NULL);
-        }
-
-        // 2. Instead of av_frame_get_buffer, grab a buffer from your pool
-        frame->buf[0] = av_buffer_pool_get(converted_pool);
-            
-        // 3. Link the frame's data pointers to the pool buffer
-        av_image_fill_arrays(frame->data, frame->linesize, 
-                            frame->buf[0]->data, static_cast<AVPixelFormat>(frame->format), 
-                            frame->width, frame->height, 32);
-
-        return frame;
+        return video_scaler.scale(frame, width, height);
     }
 
     void close() {
@@ -435,11 +403,10 @@ public:
         av_frame_free(&frame);
         av_frame_free(&video_frame);
         swr_free(&swr_ctx);
-        sws_free_context(&sws_ctx);
+        video_scaler.clear();
         audio_stream_index = -1;
         video_stream_index = -1;
         subtitle_stream_idx = -1;
-        av_buffer_pool_uninit(&converted_pool);
         subtitle_list.clear();
         audio_list.clear();
     }
@@ -560,6 +527,16 @@ public:
         }
     }
 
+    void set_skip(AVDiscard frame, AVDiscard loop_filter, AVDiscard idct) {
+        video_codec_ctx->skip_frame = frame;
+        video_codec_ctx->skip_loop_filter = loop_filter;
+        video_codec_ctx->skip_idct = idct;
+    }
+
+    void set_target_size(int width, int height) {
+        video_scaler.set_target_size(video_codec_ctx, width, height);
+    }
+
 private:
     AVFormatContext* format_ctx = nullptr;
     AVCodecContext* audio_codec_ctx = nullptr;
@@ -567,7 +544,6 @@ private:
     int audio_stream_index = -1;
 
     AVCodecContext* video_codec_ctx = nullptr;
-    SwsContext* sws_ctx = nullptr;
     int video_stream_index = -1;
 
     AVPacket* packet = nullptr;
@@ -583,7 +559,7 @@ private:
     double video_time_base = 0.0;
     double audio_time_base = 0.0;
     double subtitle_time_base = 0.0;
-    AVBufferPool *converted_pool = nullptr;
+    VideoScaler video_scaler;
 
 public:
     auto get_duration() const { return duration; }
@@ -592,11 +568,6 @@ public:
     auto get_subtitle_time_base() const { return subtitle_time_base; }
     auto get_audio_channels() const { return audio_codec_ctx->ch_layout.nb_channels; }
     auto get_audio_sample_rate() const { return audio_codec_ctx->sample_rate; }
-    void set_skip(AVDiscard frame, AVDiscard loop_filter, AVDiscard idct) {
-        video_codec_ctx->skip_frame = frame;
-        video_codec_ctx->skip_loop_filter = loop_filter;
-        video_codec_ctx->skip_idct = idct;
-    }
     auto get_subtitle_tracks() const { return subtitle_list; }
     auto get_audio_tracks() const { return audio_list; }
     auto get_subtitle_index() const { return subtitle_stream_idx; }

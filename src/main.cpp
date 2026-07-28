@@ -60,10 +60,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     SDL_SetWindowHitTest(state->window.get(), WindowHitTest, nullptr);
 
     if (!state->open_file(argv[1])) { return SDL_APP_FAILURE; }
-    SDL_ShowWindow(state->window.get());
-
     gui.init(state);
-
     SDL_ShowWindow(state->window.get());
     return SDL_APP_CONTINUE;
 }
@@ -76,6 +73,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
         if (video_frame) {
 //            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
+            state->create_texture();
             SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
             av_frame_free(&video_frame);
         }
@@ -113,12 +111,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             switch (event->key.key) {
                 case SDLK_ESCAPE: return SDL_APP_SUCCESS;
                 case SDLK_RETURN:
-                case SDLK_PERIOD:
                     if (state->open_next_file(true)) {
                         gui.show_noti(state->get_file_name());
                     }
                     break;
-                case SDLK_COMMA:
+                case SDLK_BACKSPACE:
                     if (state->open_next_file(false)) {
                         gui.show_noti(state->get_file_name());                        
                     }
@@ -132,10 +129,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     break;
                 case SDLK_KP_9:
                     state->video_scale += SCALE_N;
+                    state->set_target_size();
                     gui.show_noti(std::format("Video Scale: {:.2f}", state->video_scale));
                     break;
                 case SDLK_KP_1:
                     state->video_scale -= SCALE_N;
+                    state->set_target_size();
                     gui.show_noti(std::format("Video Scale: {:.2f}", state->video_scale));
                     break;
                 case SDLK_KP_5:
@@ -234,14 +233,14 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
 
     int window_w = 0, window_h = 0;
     float texture_w = 0, texture_h = 0;
-    SDL_FRect dst_rect{};
+    SDL_FRect dst_rect;
 
     SDL_GetRenderOutputSize(state->renderer.get(), &window_w, &window_h);
     if (state->texture) {
-        SDL_GetTextureSize(state->texture.get(), &texture_w, &texture_h);
-        float scale = SDL_max(static_cast<float>(window_w) / texture_w, static_cast<float>(window_h) / texture_h) * state->video_scale;
-        dst_rect.w = texture_w * scale; dst_rect.h = texture_h * scale;
-        dst_rect.x = (static_cast<float>(window_w) - dst_rect.w) / 2.0f + state->video_pan_x; dst_rect.y = (static_cast<float>(window_h) - dst_rect.h) / 2.0f + state->video_pan_y;
+        dst_rect.w = state->texture->w;
+        dst_rect.h = state->texture->h;
+        dst_rect.x = (window_w - dst_rect.w) / 2 + state->video_pan_x;
+        dst_rect.y = (window_h - dst_rect.h) / 2 + state->video_pan_y;
     }
 
     // Render hardware elements

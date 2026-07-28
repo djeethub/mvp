@@ -124,6 +124,11 @@ public:
         }
     }
 
+    void set_target_size(int width, int height) {
+        if (ass_renderer)
+            ass_set_frame_size(ass_renderer.get(), width, height); // Match your window canvas size        
+    }
+
 private:
     std::unique_ptr<ASS_Library, decltype(&ass_library_done)> ass_library{nullptr, ass_library_done};
     std::unique_ptr<ASS_Renderer, decltype(&ass_renderer_done)> ass_renderer{nullptr, ass_renderer_done};

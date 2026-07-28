@@ -9,7 +9,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(AVCODEC REQUIRED libavcodec libavformat libswresample libavutil libswscale)
+pkg_check_modules(AVCODEC REQUIRED libavcodec libavformat libswresample libavutil libswscale libavfilter)
 pkg_check_modules(LIBASS REQUIRED IMPORTED_TARGET libass)
 find_package(Fontconfig REQUIRED)
 

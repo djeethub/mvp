@@ -28,6 +28,12 @@ Uint32 USEREVENT_NEXT_FRAME;
 Uint32 USEREVENT_SUBTITLE_ASS;
 #define NUM_USEREVENT   2
 
+enum MediaMode {
+    None = 0,
+    Video,
+    Image
+};
+
 namespace fs = std::filesystem;
 
 using WindowPtr = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
@@ -83,6 +89,12 @@ struct AppState {
 #endif
     AssHandler ass;
     std::future<DirData *> dir_future;
+    static inline const std::unordered_set<std::string> video_exts = { ".mp4", ".mkv", ".mov", ".flv", ".wmv", ".webm" };
+    static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif" };
+    int base_w;
+    int base_h;
+    int target_w;
+    int target_h;
 
     AppState() {
 #ifdef _VIDEO_CONVERTER_THREAD_
@@ -98,11 +110,27 @@ struct AppState {
         reset_runtime_state();
     }
 
-    static bool is_supported_image(const fs::path &p) {
-        if (!p.has_extension()) return false;
+    static MediaMode is_supported_format(const fs::path &p, MediaMode mode = None) {
+        if (!p.has_extension()) return None;
         auto ext = p.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
-        return (ext == ".mp4" || ext == ".mkv" || ext == ".avi" || ext == ".mov" || ext == ".flv" || ext == ".wmv" || ext == ".webm");
+        switch (mode) {
+            case None:
+                if (video_exts.contains(ext))
+                    return Video;
+                if (image_exts.contains(ext))
+                    return Image;
+                break;
+
+            case Video:
+                if (video_exts.contains(ext))
+                    return Video;
+
+            case Image:
+                if (image_exts.contains(ext))
+                    return Image;
+        }
+        return None;
     }
 
     void clear_frame_buffers() {
@@ -152,7 +180,7 @@ struct AppState {
         return true;
     }
 
-    static DirData *dir_worker(const std::string file_path) {
+    static DirData *dir_worker(const std::string file_path, MediaMode mode) {
         auto data = new DirData;
         fs::path argpath = file_path;
         if (argpath.has_parent_path()) {
@@ -168,7 +196,7 @@ struct AppState {
         try {
             for (auto &entry : fs::directory_iterator(data->parent_dir)) {
                 if (!entry.is_regular_file()) continue;
-                if (is_supported_image(entry.path())) {
+                if (is_supported_format(entry.path(), mode)) {
                     list.push_back(entry.path().filename().string());
                 }
             }
@@ -187,7 +215,8 @@ struct AppState {
     }
 
     bool open_file(const char *file_path) {
-        if (!is_supported_image(file_path)) {
+        auto mode = is_supported_format(file_path);
+        if (mode == None) {
             std::cerr << "Not supported file: " << file_path << "\n";
             return false;
         }
@@ -196,7 +225,7 @@ struct AppState {
             delete dir_future.get();
 
         if (open_video(file_path)) {
-            dir_future = std::async(dir_worker, file_path);
+            dir_future = std::async(dir_worker, file_path, mode);
             image_files.clear();
             image_files.push_back(fs::path(file_path).filename().string());
             current_index = 0;
@@ -268,10 +297,8 @@ struct AppState {
             }
         }
 
-        int img_w = 640, img_h = 480;
         if (video.find_video_stream()) {
             if (video.open_video_decoder()) {
-                video.get_video_dimensions(img_w, img_h);
             }
         }
 
@@ -282,23 +309,13 @@ struct AppState {
         }
 
         chapter_list = video.read_chapters();
-        auto subtitle_ctx = video.get_subtitle_ctx();
-        if (subtitle_ctx)
-            ass.init(img_w, img_h, subtitle_ctx);
 
-        if (!texture || texture->w != img_w || texture->h != img_h) {
-            SDL_Texture* tex = SDL_CreateTexture(
-                renderer.get(),
-                SDL_PIXELFORMAT_NV12,
-                SDL_TEXTUREACCESS_STREAMING, 
-                img_w, 
-                img_h
-            );
-            texture.reset(tex);
-        }
-        
         resize_window();
         SDL_SetWindowTitle(window.get(), file_path.c_str());
+        video.set_target_size(target_w, target_h);
+        auto subtitle_ctx = video.get_subtitle_ctx();
+        if (subtitle_ctx)
+            ass.init(target_w, target_h, subtitle_ctx);
 
 #ifdef _VIDEO_CONVERTER_THREAD_
         video_converter.start();
@@ -402,23 +419,19 @@ struct AppState {
                     }
                     AVFrame *new_frame = nullptr;
                     if (frame->format == AV_PIX_FMT_VAAPI) {
-                        new_frame = video.video_frame_queue.alloc();
-                        new_frame->format = video.pixel_format;
+                        frame = video.scale_video_frame(frame, target_w, target_h);
+                        new_frame = av_frame_alloc();
+                        new_frame->format = ff::finalPixelFormat;
                         av_hwframe_transfer_data(new_frame, frame, 0);
                         new_frame->pts = frame->pts;
                         new_frame->duration = frame->duration;
+                        av_frame_free(&frame);
     /*                    if (av_hwframe_map(new_frame, frame, AV_HWFRAME_MAP_READ) < 0) {
                             fprintf(stderr, "Mapping to DRM PRIME failed!\n");
                             av_frame_free(&new_frame);
                         }*/
-                    } else if (frame->format != video.pixel_format) {
-                            new_frame = video.alloc_converted_frame();
-                            video.scale_video_frame(frame, new_frame);
-                            new_frame->pts = frame->pts;
-                            new_frame->duration = frame->duration;
                     } else {
-                        new_frame = video.video_frame_queue.alloc();
-                        av_frame_move_ref(new_frame, frame);
+                        new_frame = video.scale_video_frame(frame, target_w, target_h);
                     }
                     video.video_frame_queue.push(new_frame);
                 });
@@ -485,16 +498,15 @@ struct AppState {
 #endif
             if (frame_to_display)
             {
-                if (frame_to_display->format == video.pixel_format) {
+                if (frame_to_display->format == ff::finalPixelFormat) {
                     auto old_frame = video_frame.exchange(frame_to_display, std::memory_order_release);
                     av_frame_free(&old_frame);
                 } else {
-                    auto converted_frame = video.alloc_converted_frame();
-                    video.scale_video_frame(frame_to_display, converted_frame);
-                    converted_frame->pts = frame_to_display->pts;
-                    converted_frame->duration = frame_to_display->duration;
+                    auto new_frame = video.scale_video_frame(frame_to_display, target_w, target_h);
+                    new_frame->pts = frame_to_display->pts;
+                    new_frame->duration = frame_to_display->duration;
                     av_frame_free(&frame_to_display);
-                    auto old_frame = video_frame.exchange(converted_frame, std::memory_order_release);
+                    auto old_frame = video_frame.exchange(new_frame, std::memory_order_release);
                     av_frame_free(&old_frame);
                 }
 
@@ -733,6 +745,10 @@ struct AppState {
 
         SDL_SetWindowSize(window.get(), target_w, target_h);
         SDL_SetWindowPosition(window.get(), new_x, new_y);
+        base_w = target_w;
+        base_h = target_h;
+        AppState::target_w = target_w;
+        AppState::target_h = target_h;
     }
 
     void pause() {
@@ -773,6 +789,27 @@ struct AppState {
 //            if (audio_stream)
 //                SDL_FlushAudioStream(audio_stream.get());
             video.select_audio(idx);
+        }
+    }
+
+    void set_target_size() {
+        std::unique_lock<std::mutex> lock(fetch_mutex);
+        target_w = base_w * video_scale;
+        target_h = base_h * video_scale;
+        video.set_target_size(target_w, target_h);
+        ass.set_target_size(target_w, target_h);
+    }
+
+    void create_texture() {
+        if (!texture || texture->w != target_w || texture->h != target_h) {
+            SDL_Texture* tex = SDL_CreateTexture(
+                renderer.get(),
+                SDL_PIXELFORMAT_NV12,
+                SDL_TEXTUREACCESS_STREAMING, 
+                target_w,
+                target_h
+            );
+            texture.reset(tex);
         }
     }
 };
