@@ -22,6 +22,7 @@
 #include "thread.hpp"
 #endif
 #include "ass.hpp"
+#include "spscqueue.hpp"
 
 // Define a unique event ID for our frame ticker
 Uint32 USEREVENT_NEXT_FRAME;
@@ -70,7 +71,7 @@ struct AppState {
 
     ff::VideoFile video;
     std::atomic<AVFrame *> video_frame;
-    std::atomic<std::shared_ptr<Subtitle>> subtitle;
+    SPSCQueue<std::unique_ptr<Subtitle>> sub_queue;
     ff::AudioBuffer audio_buf;
     double tick_diff = 0;
     SDL_AudioDeviceID audio_device_id = 0;
@@ -99,7 +100,7 @@ struct AppState {
     int target_h;
     MediaMode media_mode;
 
-    AppState() {
+    AppState() : sub_queue(22) {
 #ifdef _VIDEO_CONVERTER_THREAD_
         video_converter.video = &video;
 #endif
@@ -142,19 +143,10 @@ struct AppState {
 #else
         video.video_frame_queue.clear();
 #endif
-        ass.flush();
-    }
-
-    void recycle_frame_buffers()
-    {
-#ifdef _VIDEO_CONVERTER_THREAD_
-        video_converter.clear();
-#else
-        video.video_frame_queue.clear();
-#endif
         if (audio_stream)
             SDL_ClearAudioStream(audio_stream.get());
         ass.flush();
+        sub_queue.clear();
     }
 
     void reset_runtime_state() {
@@ -367,16 +359,12 @@ struct AppState {
         return line; // Fallback if string is unexpected or malformed
     }
 
-    void set_subtitle(const std::string& text, AVPacket *packet) {
-        auto data = std::make_shared<Subtitle>();
+    void add_subtitle(const std::string& text, AVPacket *packet) {
+        auto data = std::make_unique<Subtitle>();
         data->text = text;
         data->pts = packet->pts * video.get_subtitle_time_base();
         data->duration = packet->duration * video.get_subtitle_time_base();
-        AppState::subtitle.store(data, std::memory_order_release);
-        SDL_Event event;
-        SDL_zero(event);
-        event.type = USEREVENT_SUBTITLE_ASS;
-        SDL_PushEvent(&event);
+        sub_queue.enqueue(std::move(data));
     }
 
     int read_next_frame(double play_time) {
@@ -431,16 +419,20 @@ struct AppState {
                 for (unsigned int i = 0; i < subtitle.num_rects; i++) {
                     AVSubtitleRect* rect = subtitle.rects[i];
                     if (rect->type == SUBTITLE_TEXT && rect->text) {
-                        set_subtitle(rect->text, packet);
+                        add_subtitle(rect->text, packet);
                     } 
                     else if (rect->type == SUBTITLE_ASS && rect->ass) {
                         // ASS subtitles contain formatting markers (e.g., {\an8}) alongside text
 //                        std::cout << "<" << subtitle.start_display_time << "ms> " << rect->ass << "\n";
 //                        set_subtitle(extract_dialogue_ass(rect->ass), packet->duration * video.subtitle_time_base);
 //                        ass.add_ass(rect, packet->pts * video.subtitle_time_base * 1000, packet->duration * video.subtitle_time_base * 1000);
-                        set_subtitle(rect->ass, packet);
+                        add_subtitle(rect->ass, packet);
                     }
                 }
+                SDL_Event event;
+                SDL_zero(event);
+                event.type = USEREVENT_SUBTITLE_ASS;
+                SDL_PushEvent(&event);
             });
             if (read_result < 0)
                 break;
@@ -596,7 +588,7 @@ struct AppState {
             is_seeking = true;
             seek_time = ts;
             video.set_skip(AVDISCARD_NONREF, AVDISCARD_ALL, AVDISCARD_ALL);
-            recycle_frame_buffers();
+            clear_frame_buffers();
         } else {
             is_seeking = false;
             seek_time = ts;
@@ -787,7 +779,7 @@ struct AppState {
     void create_texture(AVFrame *frame) {
         if (!texture || texture->w != frame->width || texture->h != frame->height) {
             auto sdl_format = ff::VideoScaler::av_to_sdl(static_cast<AVPixelFormat>(frame->format));
-            printf("texture format: %x\n", sdl_format);
+//            printf("texture format: %x\n", sdl_format);
             SDL_Texture* tex = SDL_CreateTexture(
                 renderer.get(),
                 sdl_format,

@@ -17,7 +17,8 @@ public:
         ass_renderer.reset(ass_renderer_init(ass_library.get()));
         ass_set_fonts(ass_renderer.get(), nullptr, "Sans", 1, nullptr, 1);
         ass_set_storage_size(ass_renderer.get(), width, height);
-        ass_set_frame_size(ass_renderer.get(), width, height); // Match your window canvas size        
+        ass_set_frame_size(ass_renderer.get(), width, height); // Match your window canvas size
+//        ass_set_hinting(ass_renderer.get(), ASS_HINTING_NONE);
 
         // 2. Create an EMPTY, blank track that you will feed packets manually
         ass_track.reset(ass_new_track(ass_library.get()));

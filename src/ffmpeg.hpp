@@ -246,11 +246,6 @@ public:
         avcodec_parameters_to_context(audio_codec_ctx, codec_params);
         avcodec_open2(audio_codec_ctx, codec, nullptr);
         audio_time_base = av_q2d(format_ctx->streams[audio_stream_index]->time_base);
-        printf("Codec:          %s\n", codec->name);
-        printf("Sample rate:    %d Hz\n", audio_codec_ctx->sample_rate);
-        printf("Channels:       %d\n", audio_codec_ctx->ch_layout.nb_channels);
-        printf("Sample format:  %s\n", av_get_sample_fmt_name(audio_codec_ctx->sample_fmt));
-        printf("Bit rate:       %lld\n", (long long)audio_codec_ctx->bit_rate);        
         return true;
     }
 
@@ -270,7 +265,7 @@ public:
         avcodec_open2(video_codec_ctx, codec, nullptr);
         video_time_base = av_q2d(format_ctx->streams[video_stream_index]->time_base);
         finalPixelFormat = VideoScaler::av_sup_fmt(video_codec_ctx->pix_fmt);
-        printf("av format: %i -> %i\n", video_codec_ctx->pix_fmt, finalPixelFormat);
+//        printf("av format: %i -> %i\n", video_codec_ctx->pix_fmt, finalPixelFormat);
         return true;
     }
 

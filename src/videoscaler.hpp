@@ -14,7 +14,7 @@ extern "C" {
 namespace ff {
 
 extern AVPixelFormat finalPixelFormat;
-
+/*
 class DynamicVAAPIScaler {
 private:
     AVFilterGraph* filter_graph = nullptr;
@@ -80,14 +80,14 @@ public:
         sink_ctx = nullptr;
         ret = avfilter_graph_create_filter(&sink_ctx, buffer_sink, "out", nullptr, nullptr, filter_graph);
         if (ret < 0) return ret;
-/*
+
         // 3. Set HW device context across all graph nodes
         for (unsigned i = 0; i < filter_graph->nb_filters; i++) {
             if (!filter_graph->filters[i]->hw_device_ctx && frame->hw_device_ctx) {
                 filter_graph->filters[i]->hw_device_ctx = av_buffer_ref(frame->hw_device_ctx);
             }
         }
-*/
+
         // 4. Clean Filter Description String (NO [in] or [out] brackets inside string!)
         char filter_descr[256];
         snprintf(filter_descr, sizeof(filter_descr),
@@ -210,7 +210,7 @@ public:
         return nullptr;
     }
 };
-
+*/
 class VideoScaler {
     public:
         static AVPixelFormat av_sup_fmt(AVPixelFormat fmt)
@@ -333,7 +333,7 @@ class VideoScaler {
         AVBufferPool *pool = nullptr;
         int pool_width = 0;
         int pool_height = 0;
-        DynamicVAAPIScaler hw_scaler;
+//        DynamicVAAPIScaler hw_scaler;
 
         bool setup_sws_context(AVFrame *frame, int width, int height)
         {
@@ -379,7 +379,7 @@ class VideoScaler {
 
         void clear() {
             sws_free_context(&sws_ctx);
-            hw_scaler.clear();
+//            hw_scaler.clear();
         }
 
         void set_target_size(AVCodecContext *dec_ctx, int width, int height) {

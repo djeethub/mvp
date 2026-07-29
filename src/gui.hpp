@@ -99,10 +99,10 @@ class AppGui {
                 // Extract font file path and matched family name
                 if (FcPatternGetString(font, FC_FILE, 0, &file) == FcResultMatch &&
                     FcPatternGetString(font, FC_FAMILY, 0, &matched_family) == FcResultMatch) {
-                    
+/*                    
                     std::cout << "Requested Family: " << family_name << "\n";
                     std::cout << "Matched Family:   " << matched_family << "\n";
-                    std::cout << "Font Path:        " << file << "\n";
+                    std::cout << "Font Path:        " << file << "\n";*/
                     out_path = (char *) file;
                 }
                 FcPatternDestroy(font);
@@ -130,7 +130,7 @@ class AppGui {
 
             // 3. Load the fonts from your local system or project directory
             // Arguments: (Filepath, Font Size in pixels, Config Struct, Glyph Ranges)
-            auto font_path = search_font_linux("Sans", "Regular");
+/*            auto font_path = search_font_linux("Sans", "Regular");
             auto bold_font_path = search_font_linux("Sans", "Bold");
             if (!font_path.empty()) {
                 uiFont  = io.Fonts->AddFontFromFileTTF(font_path.c_str(), 17.0f);
@@ -143,12 +143,12 @@ class AppGui {
             } else if (!font_path.empty()) {
                 osdFont = io.Fonts->AddFontFromFileTTF(font_path.c_str(), 32.0f);
                 subtitleFont = io.Fonts->AddFontFromFileTTF(font_path.c_str(), 52.0f);
-            }
+            }*/
 
             // 4. Fallback safeguard: If files are missing, default back to ProggyClean safely
-            if (uiFont == nullptr)  uiFont  = io.Fonts->AddFontDefault();
-            if (osdFont == nullptr) osdFont = io.Fonts->AddFontDefault();            
-            if (subtitleFont == nullptr) subtitleFont = io.Fonts->AddFontDefault();            
+            if (uiFont == nullptr)  uiFont  = io.Fonts->AddFontDefaultVector();
+            if (osdFont == nullptr) osdFont = io.Fonts->AddFontDefaultVector();            
+//            if (subtitleFont == nullptr) subtitleFont = io.Fonts->AddFontDefault();            
 
             // Setup Platform/Renderer Backends
             ImGui_ImplSDL3_InitForSDLRenderer(state->window.get(), state->renderer.get());
@@ -206,16 +206,16 @@ class AppGui {
                 DrawTextWithOutline(
                     draw_list, 
                     ImGui::GetFont(), 
-                    ImGui::GetFontSize(), // Scaled slightly larger for OSD
+                    ImGui::GetFontSize() * 1.5f, // Scaled slightly larger for OSD
                     osd_pos, 
                     noti_text.c_str(), 
                     IM_COL32(255, 255, 255, 255), // Pure White Text
                     IM_COL32(0, 0, 0, 200),       // Soft Transparent Black Outline
-                    1.6f                          // outline stroke thickness
+                    1.2f                          // outline stroke thickness
                 );
                 ImGui::PopFont();
             }
-
+/*
             if (subtitle_expires_at > curr_ticks)
             {
                 ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
@@ -237,7 +237,7 @@ class AppGui {
                     2, text_size.x
                 );
                 ImGui::PopFont();
-            }
+            }*/
 
             ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5, io.DisplaySize.y * 0.9), 0, ImVec2(0.5, 0.5));
             auto size = ImVec2(io.DisplaySize.x * 0.92, io.DisplaySize.y * 0.1);
@@ -365,5 +365,5 @@ class AppGui {
         uint64_t slider_expires_at = 0;
         ImFont* osdFont = nullptr;
         ImFont* uiFont  = nullptr;
-        ImFont* subtitleFont  = nullptr;
+//        ImFont* subtitleFont  = nullptr;
 };
