@@ -40,6 +40,7 @@ using WindowPtr = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
 using RendererPtr = std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)>;
 using TexturePtr = std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)>;
 using AudioStream = std::unique_ptr<SDL_AudioStream, decltype(&SDL_DestroyAudioStream)>;
+//using RenderStatePtr = std::unique_ptr<SDL_GPURenderState, decltype(&SDL_DestroyGPURenderState)>;
 
 uint32_t SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, uint32_t interval);
 
@@ -65,6 +66,7 @@ struct AppState {
     RendererPtr renderer{nullptr, SDL_DestroyRenderer};
     TexturePtr texture{nullptr, SDL_DestroyTexture};
     AudioStream audio_stream{nullptr, SDL_DestroyAudioStream};
+//    RenderStatePtr render_state{nullptr, SDL_DestroyGPURenderState};
 
     ff::VideoFile video;
     std::atomic<AVFrame *> video_frame;

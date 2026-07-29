@@ -270,6 +270,7 @@ public:
         avcodec_open2(video_codec_ctx, codec, nullptr);
         video_time_base = av_q2d(format_ctx->streams[video_stream_index]->time_base);
         finalPixelFormat = VideoScaler::av_sup_fmt(video_codec_ctx->pix_fmt);
+        printf("av format: %i -> %i\n", video_codec_ctx->pix_fmt, finalPixelFormat);
         return true;
     }
 

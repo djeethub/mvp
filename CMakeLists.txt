@@ -12,6 +12,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(AVCODEC REQUIRED libavcodec libavformat libswresample libavutil libswscale libavfilter)
 pkg_check_modules(LIBASS REQUIRED IMPORTED_TARGET libass)
 find_package(Fontconfig REQUIRED)
+find_package(Vulkan REQUIRED) # Defines Vulkan::glslc target
 
 add_subdirectory(vendor/SDL EXCLUDE_FROM_ALL)
 
@@ -25,6 +26,41 @@ set(IMGUI_SRCS
     ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
     ${IMGUI_DIR}/backends/imgui_impl_sdlrenderer3.cpp
 )
+set(SHADER_SOURCES
+#    shaders/lanczos-3.frag
+#    shaders/test.frag
+)
+
+set(SPIRV_HEADER_FILES "")
+
+foreach(SHADER_SRC ${SHADER_SOURCES})
+    get_filename_component(FILENAME ${SHADER_SRC} NAME)
+    set(SPV_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shaders/${FILENAME}.spv")
+    set(HEADER_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shaders/${FILENAME}.h")
+
+    # Ensure output directory exists
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+
+    add_custom_command(
+        OUTPUT ${SPV_OUTPUT}
+        COMMAND Vulkan::glslc ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_SRC} -o ${SPV_OUTPUT}
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_SRC}
+        COMMENT "Compiling shader ${FILENAME} -> ${FILENAME}.spv"
+        VERBATIM
+    )
+
+    add_custom_command(
+        OUTPUT ${HEADER_OUTPUT}
+        COMMAND xxd -n ${FILENAME} -i ${SPV_OUTPUT} > ${HEADER_OUTPUT}
+        DEPENDS ${SPV_OUTPUT}
+        COMMENT "Embedding ${SPV_FILE} → ${HEADER_OUTPUT}"
+        VERBATIM
+    )    
+
+    list(APPEND SPIRV_HEADER_FILES ${HEADER_OUTPUT})
+endforeach()
+
+add_custom_target(CompileShaders DEPENDS ${SPIRV_HEADER_FILES})
 
 # Create a static library target named 'my_imgui' entirely inside this scope
 add_library(my_imgui STATIC ${IMGUI_SRCS})
@@ -42,6 +78,7 @@ target_include_directories(my_imgui PRIVATE
 add_executable(main
     src/main.cpp
 )
+add_dependencies(main CompileShaders)
 
 target_compile_definitions(main PRIVATE SDL_MAIN_USE_CALLBACKS=1)
 
@@ -51,6 +88,7 @@ target_include_directories(main PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends
     ${AVCODEC_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_BINARY_DIR}/shaders
 )
 
 target_link_libraries(main PRIVATE

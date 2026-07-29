@@ -219,22 +219,13 @@ class VideoScaler {
             /* Planar YUV 4:2:0 */
             case AV_PIX_FMT_YUV420P:
             case AV_PIX_FMT_YUVJ420P:   /* full-range variant, same layout */
-            case AV_PIX_FMT_YUV420P10LE: /* 10-bit – SDL has no exact match, treat as unsupported or convert */
-            case AV_PIX_FMT_YUV420P10BE:
             /* Semi-planar (NV) */
             case AV_PIX_FMT_NV12:
             case AV_PIX_FMT_NV21:
-            case AV_PIX_FMT_P010LE:     /* 10-bit NV12-style */
-            case AV_PIX_FMT_P010BE:
             /* Packed YUV 4:2:2 */
             case AV_PIX_FMT_YUYV422:
             case AV_PIX_FMT_UYVY422:
             case AV_PIX_FMT_YVYU422:
-            /* Planar YUV 4:2:2 / 4:4:4 – no direct SDL equivalent */
-            case AV_PIX_FMT_YUV422P:
-            case AV_PIX_FMT_YUVJ422P:
-            case AV_PIX_FMT_YUV444P:
-            case AV_PIX_FMT_YUVJ444P:
             /* RGB / BGR packed */
             case AV_PIX_FMT_RGB24:
             case AV_PIX_FMT_BGR24:
@@ -245,13 +236,32 @@ class VideoScaler {
             case AV_PIX_FMT_RGB565LE:
             case AV_PIX_FMT_BGR565LE:
             /* Gray */
-            case AV_PIX_FMT_GRAY8:
                 return fmt;
+
+            case AV_PIX_FMT_YUV420P10LE: /* 10-bit – SDL has no exact match, treat as unsupported or convert */
+            case AV_PIX_FMT_YUV420P10BE:
+                return AV_PIX_FMT_YUV420P;
+
+            case AV_PIX_FMT_P010LE:     /* 10-bit NV12-style */
+            case AV_PIX_FMT_P010BE:
+                return AV_PIX_FMT_NV12;
+
+            /* Planar YUV 4:2:2 / 4:4:4 – no direct SDL equivalent */
+            case AV_PIX_FMT_YUV422P:
+            case AV_PIX_FMT_YUVJ422P:
+                return AV_PIX_FMT_YUV420P;
+
+            case AV_PIX_FMT_YUV444P:
+            case AV_PIX_FMT_YUVJ444P:
+                return AV_PIX_FMT_RGBA;
+
+            case AV_PIX_FMT_GRAY8:
+                return AV_PIX_FMT_RGBA;
 
             default:
                 return AV_PIX_FMT_NV12;
             }
-        }        
+        }
 
         static SDL_PixelFormat av_to_sdl(AVPixelFormat fmt)
         {
@@ -332,6 +342,7 @@ class VideoScaler {
                 frame->width, frame->height, static_cast<AVPixelFormat>(frame->format), // True source format
                 width, height, finalPixelFormat,       // True target format
                 SWS_LANCZOS, nullptr, nullptr, nullptr);
+                
             return sws_ctx != nullptr;
         }
 

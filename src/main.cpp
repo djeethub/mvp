@@ -4,6 +4,7 @@
 
 #include "appstate.hpp"
 #include "gui.hpp"
+//#include "shader.hpp"
 
 constexpr int BORDER_SIZE = 5;
 #define PAN_N   5
@@ -54,8 +55,11 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     state->window.reset(SDL_CreateWindow("miv", 800, 600, window_flags));
     if (!state->window) { return SDL_APP_FAILURE; }
 
-    state->renderer.reset(SDL_CreateRenderer(state->window.get(), nullptr));
+    state->renderer.reset(SDL_CreateRenderer(state->window.get(), "gpu"));
     if (!state->renderer) { return SDL_APP_FAILURE; }
+
+//    state->render_state.reset(create_render_state(state->renderer.get()));
+//    if (!state->render_state) { return SDL_APP_FAILURE; }
 
     SDL_SetWindowHitTest(state->window.get(), WindowHitTest, nullptr);
 
@@ -280,7 +284,9 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
     SDL_SetRenderDrawColor(state->renderer.get(), 50, 50, 50, 255);
     SDL_RenderClear(state->renderer.get());
     if (state->texture) {
+//        SDL_SetGPURenderState(state->renderer.get(), state->render_state.get());
         SDL_RenderTexture(state->renderer.get(), state->texture.get(), NULL, &dst_rect);
+//        SDL_SetGPURenderState(state->renderer.get(), nullptr);
     }
 
     state->draw_ass();
