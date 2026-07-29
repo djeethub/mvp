@@ -13,7 +13,7 @@ extern "C" {
 
 namespace ff {
 
-const extern AVPixelFormat finalPixelFormat;
+extern AVPixelFormat finalPixelFormat;
 
 class DynamicVAAPIScaler {
 private:
@@ -212,6 +212,112 @@ public:
 };
 
 class VideoScaler {
+    public:
+        static AVPixelFormat av_sup_fmt(AVPixelFormat fmt)
+        {
+            switch (fmt) {
+            /* Planar YUV 4:2:0 */
+            case AV_PIX_FMT_YUV420P:
+            case AV_PIX_FMT_YUVJ420P:   /* full-range variant, same layout */
+            case AV_PIX_FMT_YUV420P10LE: /* 10-bit – SDL has no exact match, treat as unsupported or convert */
+            case AV_PIX_FMT_YUV420P10BE:
+            /* Semi-planar (NV) */
+            case AV_PIX_FMT_NV12:
+            case AV_PIX_FMT_NV21:
+            case AV_PIX_FMT_P010LE:     /* 10-bit NV12-style */
+            case AV_PIX_FMT_P010BE:
+            /* Packed YUV 4:2:2 */
+            case AV_PIX_FMT_YUYV422:
+            case AV_PIX_FMT_UYVY422:
+            case AV_PIX_FMT_YVYU422:
+            /* Planar YUV 4:2:2 / 4:4:4 – no direct SDL equivalent */
+            case AV_PIX_FMT_YUV422P:
+            case AV_PIX_FMT_YUVJ422P:
+            case AV_PIX_FMT_YUV444P:
+            case AV_PIX_FMT_YUVJ444P:
+            /* RGB / BGR packed */
+            case AV_PIX_FMT_RGB24:
+            case AV_PIX_FMT_BGR24:
+            case AV_PIX_FMT_RGBA:
+            case AV_PIX_FMT_BGRA:
+            case AV_PIX_FMT_ARGB:
+            case AV_PIX_FMT_ABGR:
+            case AV_PIX_FMT_RGB565LE:
+            case AV_PIX_FMT_BGR565LE:
+            /* Gray */
+            case AV_PIX_FMT_GRAY8:
+                return fmt;
+
+            default:
+                return AV_PIX_FMT_NV12;
+            }
+        }        
+
+        static SDL_PixelFormat av_to_sdl(AVPixelFormat fmt)
+        {
+            switch (fmt) {
+            /* Planar YUV 4:2:0 */
+            case AV_PIX_FMT_YUV420P:
+            case AV_PIX_FMT_YUVJ420P:   /* full-range variant, same layout */
+                return SDL_PIXELFORMAT_IYUV;   /* Y + U + V */
+
+            case AV_PIX_FMT_YUV420P10LE: /* 10-bit – SDL has no exact match, treat as unsupported or convert */
+            case AV_PIX_FMT_YUV420P10BE:
+                return SDL_PIXELFORMAT_UNKNOWN;
+
+            /* Semi-planar (NV) */
+            case AV_PIX_FMT_NV12:
+                return SDL_PIXELFORMAT_NV12;
+            case AV_PIX_FMT_NV21:
+                return SDL_PIXELFORMAT_NV21;
+            case AV_PIX_FMT_P010LE:     /* 10-bit NV12-style */
+            case AV_PIX_FMT_P010BE:
+                return SDL_PIXELFORMAT_P010;
+
+            /* Packed YUV 4:2:2 */
+            case AV_PIX_FMT_YUYV422:
+                return SDL_PIXELFORMAT_YUY2;
+            case AV_PIX_FMT_UYVY422:
+                return SDL_PIXELFORMAT_UYVY;
+            case AV_PIX_FMT_YVYU422:
+                return SDL_PIXELFORMAT_YVYU;
+
+            /* Planar YUV 4:2:2 / 4:4:4 – no direct SDL equivalent */
+            case AV_PIX_FMT_YUV422P:
+            case AV_PIX_FMT_YUVJ422P:
+            case AV_PIX_FMT_YUV444P:
+            case AV_PIX_FMT_YUVJ444P:
+                return SDL_PIXELFORMAT_UNKNOWN;
+
+            /* RGB / BGR packed */
+            case AV_PIX_FMT_RGB24:
+                return SDL_PIXELFORMAT_RGB24;
+            case AV_PIX_FMT_BGR24:
+                return SDL_PIXELFORMAT_BGR24;
+
+            case AV_PIX_FMT_RGBA:
+                return SDL_PIXELFORMAT_RGBA32;   /* or SDL_PIXELFORMAT_RGBA8888 */
+            case AV_PIX_FMT_BGRA:
+                return SDL_PIXELFORMAT_BGRA32;
+            case AV_PIX_FMT_ARGB:
+                return SDL_PIXELFORMAT_ARGB32;
+            case AV_PIX_FMT_ABGR:
+                return SDL_PIXELFORMAT_ABGR32;
+
+            case AV_PIX_FMT_RGB565LE:
+                return SDL_PIXELFORMAT_RGB565;
+            case AV_PIX_FMT_BGR565LE:
+                return SDL_PIXELFORMAT_BGR565;
+
+            /* Gray */
+            case AV_PIX_FMT_GRAY8:
+                return SDL_PIXELFORMAT_INDEX8;   /* closest; needs palette or treat as single-channel */
+
+            default:
+                return SDL_PIXELFORMAT_UNKNOWN;
+            }
+        }        
+
     private:
         SwsContext *sws_ctx = nullptr;
         AVBufferPool *pool = nullptr;
@@ -225,7 +331,7 @@ class VideoScaler {
             sws_ctx = sws_getContext(
                 frame->width, frame->height, static_cast<AVPixelFormat>(frame->format), // True source format
                 width, height, finalPixelFormat,       // True target format
-                SWS_BICUBIC, nullptr, nullptr, nullptr);
+                SWS_LANCZOS, nullptr, nullptr, nullptr);
             return sws_ctx != nullptr;
         }
 
@@ -268,8 +374,22 @@ class VideoScaler {
         void set_target_size(AVCodecContext *dec_ctx, int width, int height) {
         }
 
+        AVFrame *dl_frame(AVFrame *frame) {
+            auto new_frame = av_frame_alloc();
+            new_frame->format = finalPixelFormat;
+            av_hwframe_transfer_data(new_frame, frame, 0);
+            new_frame->pts = frame->pts;
+            new_frame->duration = frame->duration;
+            return new_frame;
+        }
+
         AVFrame *scale(AVFrame *frame, int width, int height) {
             if (frame->format == AV_PIX_FMT_VAAPI) {
+                auto sw_frame = dl_frame(frame);
+                auto new_frame = scale(sw_frame, width, height);
+                av_frame_free(&sw_frame);
+                return new_frame;
+/*
                 if (width == frame->width && height == frame->height)
                 {
                     auto new_frame = av_frame_alloc();
@@ -280,7 +400,7 @@ class VideoScaler {
                 auto new_frame = hw_scaler.process_frame(frame, width, height);
                 new_frame->pts = frame->pts;
                 new_frame->duration = frame->duration;
-                return new_frame;
+                return new_frame;*/
             } else {
                 if (frame->format == finalPixelFormat && width == frame->width && height == frame->height)
                 {

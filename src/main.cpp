@@ -65,6 +65,28 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     return SDL_APP_CONTINUE;
 }
 
+enum SDL_UpdateKind {
+    SDL_UPDATE_TEXTURE,   /* SDL_UpdateTexture  (packed / RGB) */
+    SDL_UPDATE_YUV,       /* SDL_UpdateYUVTexture (planar YUV) */
+    SDL_UPDATE_NV,        /* SDL_UpdateNVTexture  (NV12/NV21/P010) */
+    SDL_UPDATE_NONE
+};
+
+SDL_UpdateKind get_update_kind(SDL_PixelFormat format) {
+    switch (format) {
+        case SDL_PIXELFORMAT_IYUV:
+            return SDL_UPDATE_YUV;
+
+        case SDL_PIXELFORMAT_NV12:
+        case SDL_PIXELFORMAT_NV21:
+        case SDL_PIXELFORMAT_P010:
+            return SDL_UPDATE_NV;
+
+        default:
+            return SDL_UPDATE_TEXTURE;
+    }
+}
+
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     auto *state = static_cast<AppState*>(appstate);
     ImGui_ImplSDL3_ProcessEvent(event);
@@ -73,8 +95,18 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
         if (video_frame) {
 //            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
-            state->create_texture();
-            SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
+            state->create_texture(video_frame);
+            switch (get_update_kind(state->texture->format)) {
+                case SDL_UPDATE_NV:
+                    SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
+                    break;
+                case SDL_UPDATE_YUV:
+                    SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
+                    break;
+                default:
+                    SDL_UpdateTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0]);
+                    break;
+            }
             av_frame_free(&video_frame);
         }
         return SDL_APP_CONTINUE;
@@ -138,9 +170,10 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     gui.show_noti(std::format("Video Scale: {:.2f}", state->video_scale));
                     break;
                 case SDLK_KP_5:
-                    state->video_scale = 1;
                     state->video_pan_x = 0;
                     state->video_pan_y = 0;
+                    state->video_scale = 1;
+                    state->set_target_size();
                     gui.show_noti("Video Reset");
                     break;
                 case SDLK_KP_4:
@@ -237,8 +270,8 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
 
     SDL_GetRenderOutputSize(state->renderer.get(), &window_w, &window_h);
     if (state->texture) {
-        dst_rect.w = state->texture->w;
-        dst_rect.h = state->texture->h;
+        dst_rect.w = state->target_w;
+        dst_rect.h = state->target_h;
         dst_rect.x = (window_w - dst_rect.w) / 2 + state->video_pan_x;
         dst_rect.y = (window_h - dst_rect.h) / 2 + state->video_pan_y;
     }

@@ -20,7 +20,7 @@ extern "C" {
 
 namespace ff {
 
-const AVPixelFormat finalPixelFormat = AV_PIX_FMT_NV12;
+AVPixelFormat finalPixelFormat = AV_PIX_FMT_NV12;
 
 struct ChapterData {
     std::string title;
@@ -269,6 +269,7 @@ public:
         avcodec_parameters_to_context(video_codec_ctx, codec_params);
         avcodec_open2(video_codec_ctx, codec, nullptr);
         video_time_base = av_q2d(format_ctx->streams[video_stream_index]->time_base);
+        finalPixelFormat = VideoScaler::av_sup_fmt(video_codec_ctx->pix_fmt);
         return true;
     }
 

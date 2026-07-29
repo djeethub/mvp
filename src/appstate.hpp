@@ -95,6 +95,7 @@ struct AppState {
     int base_h;
     int target_w;
     int target_h;
+    MediaMode media_mode;
 
     AppState() {
 #ifdef _VIDEO_CONVERTER_THREAD_
@@ -162,6 +163,7 @@ struct AppState {
         audio_stream.reset();
         video.close();
         clear_frame_buffers();
+        texture.reset();
         is_seeking = true;
     }
 
@@ -225,6 +227,7 @@ struct AppState {
             delete dir_future.get();
 
         if (open_video(file_path)) {
+            media_mode = mode;
             dir_future = std::async(dir_worker, file_path, mode);
             image_files.clear();
             image_files.push_back(fs::path(file_path).filename().string());
@@ -417,26 +420,11 @@ struct AppState {
                     if (frame->pts * video.get_video_time_base() < play_time) {
                         return;
                     }
-                    AVFrame *new_frame = nullptr;
-                    if (frame->format == AV_PIX_FMT_VAAPI) {
-                        frame = video.scale_video_frame(frame, target_w, target_h);
-                        new_frame = av_frame_alloc();
-                        new_frame->format = ff::finalPixelFormat;
-                        av_hwframe_transfer_data(new_frame, frame, 0);
-                        new_frame->pts = frame->pts;
-                        new_frame->duration = frame->duration;
-                        av_frame_free(&frame);
-    /*                    if (av_hwframe_map(new_frame, frame, AV_HWFRAME_MAP_READ) < 0) {
-                            fprintf(stderr, "Mapping to DRM PRIME failed!\n");
-                            av_frame_free(&new_frame);
-                        }*/
-                    } else {
-                        new_frame = video.scale_video_frame(frame, target_w, target_h);
-                    }
+                    AVFrame *new_frame = video.scale_video_frame(frame, target_w, target_h);
                     video.video_frame_queue.push(new_frame);
                 });
 #endif
-            }, [&](AVSubtitle& subtitle, AVPacket *packet){
+            }, [&](AVSubtitle& subtitle, AVPacket *packet) {
                 // Iterate through the subtitle rectangles (lines/images)
                 for (unsigned int i = 0; i < subtitle.num_rects; i++) {
                     AVSubtitleRect* rect = subtitle.rects[i];
@@ -498,17 +486,8 @@ struct AppState {
 #endif
             if (frame_to_display)
             {
-                if (frame_to_display->format == ff::finalPixelFormat) {
-                    auto old_frame = video_frame.exchange(frame_to_display, std::memory_order_release);
-                    av_frame_free(&old_frame);
-                } else {
-                    auto new_frame = video.scale_video_frame(frame_to_display, target_w, target_h);
-                    new_frame->pts = frame_to_display->pts;
-                    new_frame->duration = frame_to_display->duration;
-                    av_frame_free(&frame_to_display);
-                    auto old_frame = video_frame.exchange(new_frame, std::memory_order_release);
-                    av_frame_free(&old_frame);
-                }
+                auto old_frame = video_frame.exchange(frame_to_display, std::memory_order_release);
+                av_frame_free(&old_frame);
 
                 SDL_Event event;
                 SDL_zero(event);
@@ -745,8 +724,8 @@ struct AppState {
 
         SDL_SetWindowSize(window.get(), target_w, target_h);
         SDL_SetWindowPosition(window.get(), new_x, new_y);
-        base_w = target_w;
-        base_h = target_h;
+        base_w = img_w;
+        base_h = img_h;
         AppState::target_w = target_w;
         AppState::target_h = target_h;
     }
@@ -776,7 +755,7 @@ struct AppState {
     }
 
     void select_subtitle(int idx) {
-        std::unique_lock<std::mutex> lock(fetch_mutex);
+        std::lock_guard<std::mutex> lock(fetch_mutex);
         if (video.get_subtitle_index() != idx) {
             ass.flush();
             video.select_subtitle(idx);
@@ -784,7 +763,7 @@ struct AppState {
     }
 
     void select_audio(int idx) {
-        std::unique_lock<std::mutex> lock(fetch_mutex);
+        std::lock_guard<std::mutex> lock(fetch_mutex);
         if (video.get_audio_index() != idx) {
 //            if (audio_stream)
 //                SDL_FlushAudioStream(audio_stream.get());
@@ -793,21 +772,26 @@ struct AppState {
     }
 
     void set_target_size() {
-        std::unique_lock<std::mutex> lock(fetch_mutex);
-        target_w = base_w * video_scale;
-        target_h = base_h * video_scale;
+        int window_w, window_h;
+        SDL_GetRenderOutputSize(renderer.get(), &window_w, &window_h);
+        float scale = SDL_max(static_cast<float>(window_w) / base_w, static_cast<float>(window_h) / base_h) * video_scale;
+        std::lock_guard<std::mutex> lock(fetch_mutex);
+        target_w = base_w * scale;
+        target_h = base_h * scale;
         video.set_target_size(target_w, target_h);
         ass.set_target_size(target_w, target_h);
     }
 
-    void create_texture() {
-        if (!texture || texture->w != target_w || texture->h != target_h) {
+    void create_texture(AVFrame *frame) {
+        if (!texture || texture->w != frame->width || texture->h != frame->height) {
+            auto sdl_format = ff::VideoScaler::av_to_sdl(static_cast<AVPixelFormat>(frame->format));
+            printf("texture format: %x\n", sdl_format);
             SDL_Texture* tex = SDL_CreateTexture(
                 renderer.get(),
-                SDL_PIXELFORMAT_NV12,
+                sdl_format,
                 SDL_TEXTUREACCESS_STREAMING, 
-                target_w,
-                target_h
+                frame->width,
+                frame->height
             );
             texture.reset(tex);
         }
