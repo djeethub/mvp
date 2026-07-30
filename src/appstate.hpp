@@ -23,6 +23,7 @@
 #endif
 #include "ass.hpp"
 #include "readerwriterqueue.h"
+#include "twowayqueue.hpp"
 
 // Define a unique event ID for our frame ticker
 Uint32 USEREVENT_NEXT_FRAME;
@@ -71,7 +72,7 @@ struct AppState {
 
     ff::VideoFile video;
     std::atomic<AVFrame *> video_frame;
-    moodycamel::ReaderWriterQueue<std::unique_ptr<Subtitle>> sub_queue;
+    TwowayQueue<Subtitle *> sub_queue;
     ff::AudioBuffer audio_buf;
     double tick_diff = 0;
     SDL_AudioDeviceID audio_device_id = 0;
@@ -146,7 +147,7 @@ struct AppState {
         if (audio_stream)
             SDL_ClearAudioStream(audio_stream.get());
         ass.flush();
-        while (sub_queue.pop()) {}
+        sub_queue.recycle_all();
     }
 
     void reset_runtime_state() {
@@ -360,7 +361,7 @@ struct AppState {
     }
 
     void add_subtitle(const std::string& text, AVPacket *packet) {
-        auto data = std::make_unique<Subtitle>();
+        auto data = sub_queue.alloc();
         data->text = text;
         data->pts = packet->pts * video.get_subtitle_time_base();
         data->duration = packet->duration * video.get_subtitle_time_base();
@@ -455,7 +456,7 @@ struct AppState {
                     if (is_seeking) {
                         if (frame_time < play_time) {
                             video.video_frame_queue.pop();
-                            av_frame_free(&frame);
+                            ff::frame_recycle(frame);
                             need_fetch = true;
                             continue;
                         } else {
@@ -466,7 +467,7 @@ struct AppState {
                     }
                     if (frame_time <= play_time) {
                         if (frame_to_display)
-                            av_frame_free(&frame_to_display);
+                            ff::frame_recycle(frame_to_display);
                         frame_to_display = frame;
                         video.video_frame_queue.pop();
                         need_fetch = true;
@@ -481,7 +482,7 @@ struct AppState {
             if (frame_to_display)
             {
                 auto old_frame = video_frame.exchange(frame_to_display, std::memory_order_release);
-                av_frame_free(&old_frame);
+                ff::frame_recycle(old_frame);
 
                 SDL_Event event;
                 SDL_zero(event);

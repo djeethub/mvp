@@ -14,6 +14,9 @@ extern "C" {
 namespace ff {
 
 extern AVPixelFormat finalPixelFormat;
+AVFrame *frame_alloc();
+void frame_recycle(AVFrame *frame);
+
 /*
 class DynamicVAAPIScaler {
 private:
@@ -355,7 +358,7 @@ class VideoScaler {
                 pool = av_buffer_pool_init(buffer_size, NULL);
             }
 
-            AVFrame *new_frame = av_frame_alloc();
+            AVFrame *new_frame = frame_alloc();
             new_frame->format = finalPixelFormat;
             new_frame->width  = width;
             new_frame->height = height;
@@ -386,7 +389,7 @@ class VideoScaler {
         }
 
         AVFrame *dl_frame(AVFrame *frame) {
-            auto new_frame = av_frame_alloc();
+            auto new_frame = frame_alloc();
             new_frame->format = finalPixelFormat;
             av_hwframe_transfer_data(new_frame, frame, 0);
             new_frame->pts = frame->pts;
@@ -398,7 +401,7 @@ class VideoScaler {
             if (frame->format == AV_PIX_FMT_VAAPI) {
                 auto sw_frame = dl_frame(frame);
                 auto new_frame = scale(sw_frame, width, height);
-                av_frame_free(&sw_frame);
+                frame_recycle(sw_frame);
                 return new_frame;
 /*
                 if (width == frame->width && height == frame->height)
@@ -415,7 +418,7 @@ class VideoScaler {
             } else {
                 if (frame->format == finalPixelFormat && width == frame->width && height == frame->height)
                 {
-                    auto new_frame = av_frame_alloc();
+                    auto new_frame = frame_alloc();
                     av_frame_move_ref(new_frame, frame);
                     return new_frame;
                 }

@@ -17,6 +17,7 @@ extern "C" {
 }
 
 #include "videoscaler.hpp"
+#include "concurrentqueue.h"
 
 namespace ff {
 
@@ -52,6 +53,33 @@ struct AudioData {
     std::string lang;
     std::string title;
     AVCodecID codec_id;
+};
+
+class FramePool {
+protected:
+    moodycamel::ConcurrentQueue<AVFrame *> recycle_queue;
+
+public:
+    ~FramePool() {
+        AVFrame *frame;
+        while (recycle_queue.try_dequeue(frame)) {
+            av_frame_free(&frame);
+        }
+    }
+
+    void recycle(AVFrame *frame) {
+        if (!frame)
+            return;
+        av_frame_unref(frame);
+        recycle_queue.enqueue(frame);
+    }
+
+    AVFrame *alloc() {
+        AVFrame *frame;
+        if (recycle_queue.try_dequeue(frame))
+            return frame;
+        return av_frame_alloc();
+    }
 };
 
 template <typename DataPtr, DataPtr (*AllocFunc)(), void (*FreeFunc)(DataPtr*)>
@@ -116,6 +144,15 @@ struct AvQueue {
 
 typedef AvQueue<AVPacket *, av_packet_alloc, av_packet_free> PacketQueue;
 typedef AvQueue<AVFrame *, av_frame_alloc, av_frame_free> FrameQueue;
+FramePool frame_pool;
+
+inline AVFrame *frame_alloc() {
+    return frame_pool.alloc();
+}
+
+inline void frame_recycle(AVFrame *frame) {
+    frame_pool.recycle(frame);
+}
 
 class VideoFile {
 public:
@@ -303,7 +340,7 @@ public:
     int feed_frame(double play_time, AudioFeedFunc audio_feed, VideoFeedFunc video_feed, SubtitleFeedFunc subtitle_feed)
     {
         if (!packet) packet = av_packet_alloc();
-        if (!frame) frame = av_frame_alloc();
+        if (!frame) frame = frame_pool.alloc();
 
         auto read_result = av_read_frame(format_ctx, packet);
         if (read_result < 0 && read_result != AVERROR_EOF)
@@ -344,7 +381,7 @@ public:
 
     template <typename VideoFeedFunc>
     void feed_video_frame(AVPacket *packet, VideoFeedFunc video_feed) {
-        if (!video_frame) video_frame = av_frame_alloc();
+        if (!video_frame) video_frame = frame_pool.alloc();
         if (avcodec_send_packet(video_codec_ctx, packet) >= 0)
         {
             while (avcodec_receive_frame(video_codec_ctx, video_frame) >= 0)
@@ -397,8 +434,6 @@ public:
         avcodec_free_context(&video_codec_ctx);
         avcodec_free_context(&subtitle_codec_ctx);
         avformat_close_input(&format_ctx);
-        av_frame_free(&frame);
-        av_frame_free(&video_frame);
         swr_free(&swr_ctx);
         video_scaler.clear();
         audio_stream_index = -1;
