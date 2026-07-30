@@ -113,12 +113,10 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         }
         return SDL_APP_CONTINUE;
     } else if (event->type == USEREVENT_SUBTITLE_ASS) {
-        while (auto data = state->sub_queue.dequeue()) {
-            if (data) {
-                auto subtitle = data->get();
-                state->ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
+        std::unique_ptr<Subtitle> subtitle;
+        while (state->sub_queue.try_dequeue(subtitle)) {
+            state->ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
 //                printf("subtitle: %s, %f, %f\n", subtitle->text.c_str(), subtitle->pts, subtitle->duration);
-            }
         }
         return SDL_APP_CONTINUE;
     }

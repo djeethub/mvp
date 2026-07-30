@@ -22,7 +22,7 @@
 #include "thread.hpp"
 #endif
 #include "ass.hpp"
-#include "spscqueue.hpp"
+#include "readerwriterqueue.h"
 
 // Define a unique event ID for our frame ticker
 Uint32 USEREVENT_NEXT_FRAME;
@@ -71,7 +71,7 @@ struct AppState {
 
     ff::VideoFile video;
     std::atomic<AVFrame *> video_frame;
-    SPSCQueue<std::unique_ptr<Subtitle>> sub_queue;
+    moodycamel::ReaderWriterQueue<std::unique_ptr<Subtitle>> sub_queue;
     ff::AudioBuffer audio_buf;
     double tick_diff = 0;
     SDL_AudioDeviceID audio_device_id = 0;
@@ -100,7 +100,7 @@ struct AppState {
     int target_h;
     MediaMode media_mode;
 
-    AppState() : sub_queue(22) {
+    AppState() : sub_queue(32) {
 #ifdef _VIDEO_CONVERTER_THREAD_
         video_converter.video = &video;
 #endif
@@ -146,7 +146,7 @@ struct AppState {
         if (audio_stream)
             SDL_ClearAudioStream(audio_stream.get());
         ass.flush();
-        sub_queue.clear();
+        while (sub_queue.pop()) {}
     }
 
     void reset_runtime_state() {
