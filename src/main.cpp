@@ -4,7 +4,7 @@
 
 #include "appstate.hpp"
 #include "gui.hpp"
-//#include "shader.hpp"
+#include "shader.hpp"
 
 constexpr int BORDER_SIZE = 5;
 #define PAN_N   5
@@ -56,8 +56,8 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     state->renderer.reset(SDL_CreateRenderer(state->window.get(), "gpu"));
     if (!state->renderer) { return SDL_APP_FAILURE; }
 
-//    state->render_state.reset(create_render_state(state->renderer.get()));
-//    if (!state->render_state) { return SDL_APP_FAILURE; }
+    state->render_state.reset(create_render_state(state->renderer.get()));
+    if (!state->render_state) { return SDL_APP_FAILURE; }
 
     SDL_SetWindowHitTest(state->window.get(), WindowHitTest, nullptr);
 
@@ -274,19 +274,37 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
 
     SDL_GetRenderOutputSize(state->renderer.get(), &window_w, &window_h);
     if (state->texture) {
-        dst_rect.w = state->target_w;
-        dst_rect.h = state->target_h;
-        dst_rect.x = (window_w - dst_rect.w) / 2 + state->video_pan_x;
-        dst_rect.y = (window_h - dst_rect.h) / 2 + state->video_pan_y;
+//        dst_rect.w = state->target_w;
+//        dst_rect.h = state->target_h;
+//        dst_rect.x = (window_w - dst_rect.w) / 2 + state->video_pan_x;
+//        dst_rect.y = (window_h - dst_rect.h) / 2 + state->video_pan_y;
+        dst_rect.x = 0;
+        dst_rect.y = 0;
+        dst_rect.w = window_w;
+        dst_rect.h = window_h;
     }
 
     // Render hardware elements
     SDL_SetRenderDrawColor(state->renderer.get(), 50, 50, 50, 255);
     SDL_RenderClear(state->renderer.get());
     if (state->texture) {
-//        SDL_SetGPURenderState(state->renderer.get(), state->render_state.get());
+        typedef struct {
+            float texture_size[2];
+            float lobes;
+            float _pad;
+        } LanczosUniforms;
+
+        LanczosUniforms u = {
+            .texture_size = { (float)state->texture->w, (float)state->texture->h },
+            .lobes = 3.0f
+        };
+
+        SDL_SetGPURenderStateFragmentUniforms(state->render_state.get(), 0, &u, sizeof(u));
+
+//        SDL_SetTextureScaleMode(state->texture.get(), SDL_SCALEMODE_LINEAR);
+        SDL_SetGPURenderState(state->renderer.get(), state->render_state.get());
         SDL_RenderTexture(state->renderer.get(), state->texture.get(), NULL, &dst_rect);
-//        SDL_SetGPURenderState(state->renderer.get(), nullptr);
+        SDL_SetGPURenderState(state->renderer.get(), nullptr);
     }
 
     state->draw_ass();

@@ -10,7 +10,7 @@ SDL_GPURenderState *create_render_state(SDL_Renderer *renderer) {
     shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
     shader_info.entrypoint = "main";
     shader_info.num_samplers = 1;               // usually 1 (the texture being drawn)
-//    shader_info.num_uniform_buffers = 1;        // if you need uniforms
+    shader_info.num_uniform_buffers = 1;        // if you need uniforms
 
     // Choose format based on what the device supports
     SDL_GPUShaderFormat formats = SDL_GetGPUShaderFormats(device);

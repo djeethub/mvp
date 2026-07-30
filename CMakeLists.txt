@@ -27,7 +27,7 @@ set(IMGUI_SRCS
 )
 set(SHADER_SOURCES
 #    shaders/lanczos-3.frag
-#    shaders/test.frag
+    shaders/test.frag
 )
 
 set(SPIRV_HEADER_FILES "")

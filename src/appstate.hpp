@@ -42,7 +42,7 @@ using WindowPtr = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
 using RendererPtr = std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)>;
 using TexturePtr = std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)>;
 using AudioStream = std::unique_ptr<SDL_AudioStream, decltype(&SDL_DestroyAudioStream)>;
-//using RenderStatePtr = std::unique_ptr<SDL_GPURenderState, decltype(&SDL_DestroyGPURenderState)>;
+using RenderStatePtr = std::unique_ptr<SDL_GPURenderState, decltype(&SDL_DestroyGPURenderState)>;
 
 uint32_t SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, uint32_t interval);
 
@@ -68,7 +68,7 @@ struct AppState {
     RendererPtr renderer{nullptr, SDL_DestroyRenderer};
     TexturePtr texture{nullptr, SDL_DestroyTexture};
     AudioStream audio_stream{nullptr, SDL_DestroyAudioStream};
-//    RenderStatePtr render_state{nullptr, SDL_DestroyGPURenderState};
+    RenderStatePtr render_state{nullptr, SDL_DestroyGPURenderState};
 
     ff::VideoFile video;
     std::atomic<AVFrame *> video_frame;
@@ -721,8 +721,10 @@ struct AppState {
         SDL_SetWindowPosition(window.get(), new_x, new_y);
         base_w = img_w;
         base_h = img_h;
-        AppState::target_w = target_w;
-        AppState::target_h = target_h;
+//        AppState::target_w = target_w;
+//        AppState::target_h = target_h;
+        AppState::target_w = img_w;
+        AppState::target_h = img_h;
     }
 
     void pause() {
@@ -780,7 +782,7 @@ struct AppState {
     void create_texture(AVFrame *frame) {
         if (!texture || texture->w != frame->width || texture->h != frame->height) {
             auto sdl_format = ff::VideoScaler::av_to_sdl(static_cast<AVPixelFormat>(frame->format));
-//            printf("texture format: %x\n", sdl_format);
+            printf("texture format: %x\n", sdl_format);
             SDL_Texture* tex = SDL_CreateTexture(
                 renderer.get(),
                 sdl_format,
