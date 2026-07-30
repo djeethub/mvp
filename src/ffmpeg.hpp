@@ -82,10 +82,12 @@ public:
     }
 };
 
-template <typename DataPtr, void (*FreeFunc)(DataPtr*)>
-struct AvQueue {
-    std::queue<DataPtr> queue;
+template <typename T>
+class AvQueue {
+protected:
+    std::queue<T> queue;
 
+public:
     ~AvQueue() {
         clear();
     }
@@ -93,18 +95,18 @@ struct AvQueue {
     void clear() {
         while (!queue.empty())
         {
-            FreeFunc(&queue.front());
+            destroy(queue.front());
             queue.pop();
         }
     }
 
-    DataPtr get() {
-        DataPtr data_ptr = queue.front();
+    T get() {
+        T data_ptr = queue.front();
         queue.pop();
         return data_ptr;
     }
 
-    DataPtr front() {
+    T front() {
         return queue.front();
     }
 
@@ -112,15 +114,9 @@ struct AvQueue {
         queue.pop();
     }
 
-    void push(DataPtr data_ptr) {
+    void push(T data_ptr) {
         if (data_ptr) {
             queue.push(data_ptr);
-        }
-    }
-
-    void clear(DataPtr data_ptr) {
-        if (data_ptr) {
-            FreeFunc(&data_ptr);
         }
     }
 
@@ -131,10 +127,16 @@ struct AvQueue {
     auto empty() {
         return queue.empty();
     }
+
+    virtual void destroy(T pptr) = 0;
 };
 
-typedef AvQueue<AVPacket *, av_packet_free> PacketQueue;
-typedef AvQueue<AVFrame *, av_frame_free> FrameQueue;
+class FrameQueue : public AvQueue<AVFrame *> {
+    void destroy(AVFrame *pptr) {
+        av_frame_free(&pptr);
+    }
+};
+
 FramePool frame_pool;
 
 inline AVFrame *frame_alloc() {
@@ -206,7 +208,6 @@ public:
                     subtitle.title = std::format("Track {}", i);
                 subtitle.codec_id = stream->codecpar->codec_id;
                 subtitle_list.push_back(subtitle);
-                std::cout << std::format("Subtitle: {} ({})\n", subtitle.title, subtitle.lang);
             }
         }
 
@@ -234,7 +235,6 @@ public:
                     data.title = std::format("Track {}", i);
                 data.codec_id = stream->codecpar->codec_id;
                 audio_list.push_back(data);
-                std::cout << std::format("Audio: {} ({})\n", data.title, data.lang);
             }
         }
 
