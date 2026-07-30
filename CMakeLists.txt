@@ -65,6 +65,24 @@ add_custom_target(CompileShaders DEPENDS ${SPIRV_HEADER_FILES})
 add_library(my_imgui STATIC ${IMGUI_SRCS})
 set_target_properties(my_imgui PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
+include(FetchContent)
+
+FetchContent_Declare(
+  readerwriterqueue
+  GIT_REPOSITORY    https://github.com/cameron314/readerwriterqueue
+  GIT_TAG           master
+)
+FetchContent_MakeAvailable(readerwriterqueue)
+FetchContent_GetProperties(readerwriterqueue SOURCE_DIR readerwriterqueue_dir)
+
+FetchContent_Declare(
+  concurrentqueue
+  GIT_REPOSITORY    https://github.com/cameron314/concurrentqueue
+  GIT_TAG           master
+)
+FetchContent_MakeAvailable(concurrentqueue)
+FetchContent_GetProperties(concurrentqueue SOURCE_DIR concurrentqueue_dir)
+
 # Configure includes for the 'my_imgui' target safely
 target_include_directories(my_imgui PUBLIC 
     ${IMGUI_DIR}
@@ -88,6 +106,8 @@ target_include_directories(main PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends
     ${AVCODEC_INCLUDE_DIRS}
     ${CMAKE_CURRENT_BINARY_DIR}/shaders
+    ${readerwriterqueue_dir}
+    ${concurrentqueue_dir}
 )
 
 target_link_libraries(main PRIVATE
@@ -96,8 +116,4 @@ target_link_libraries(main PRIVATE
     ${AVCODEC_LIBRARIES}
     ${LIBASS_LIBRARIES}
 #    Fontconfig::Fontconfig
-)
-
-target_compile_options(main PRIVATE 
-    "--param" "destructive-interference-size=64"
 )

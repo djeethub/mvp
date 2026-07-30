@@ -29,6 +29,13 @@ struct ChapterData {
     double end_time;   // in seconds
 };
 
+struct AudioData {
+    int idx;
+    std::string lang;
+    std::string title;
+    AVCodecID codec_id;
+};
+
 struct AudioBuffer {
     uint8_t *buf = nullptr;
     int size = 0;
@@ -46,13 +53,6 @@ struct AudioBuffer {
             size = n;
         }
     }
-};
-
-struct AudioData {
-    int idx;
-    std::string lang;
-    std::string title;
-    AVCodecID codec_id;
 };
 
 class FramePool {
@@ -82,7 +82,7 @@ public:
     }
 };
 
-template <typename DataPtr, DataPtr (*AllocFunc)(), void (*FreeFunc)(DataPtr*)>
+template <typename DataPtr, void (*FreeFunc)(DataPtr*)>
 struct AvQueue {
     std::queue<DataPtr> queue;
 
@@ -112,15 +112,6 @@ struct AvQueue {
         queue.pop();
     }
 
-    DataPtr alloc() {
-        return AllocFunc();
-    }
-
-    template <typename CustomAllocFunc>
-    DataPtr alloc(CustomAllocFunc func) {
-        return func();
-    }
-
     void push(DataPtr data_ptr) {
         if (data_ptr) {
             queue.push(data_ptr);
@@ -142,8 +133,8 @@ struct AvQueue {
     }
 };
 
-typedef AvQueue<AVPacket *, av_packet_alloc, av_packet_free> PacketQueue;
-typedef AvQueue<AVFrame *, av_frame_alloc, av_frame_free> FrameQueue;
+typedef AvQueue<AVPacket *, av_packet_free> PacketQueue;
+typedef AvQueue<AVFrame *, av_frame_free> FrameQueue;
 FramePool frame_pool;
 
 inline AVFrame *frame_alloc() {
@@ -159,6 +150,9 @@ public:
     VideoFile() = default;
     ~VideoFile() {
         close();
+        av_packet_free(&packet);
+        av_frame_free(&frame);
+        av_frame_free(&video_frame);
     }
 
     VideoFile(const VideoFile&) = delete;
