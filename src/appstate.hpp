@@ -24,6 +24,7 @@
 #include "ass.hpp"
 #include "readerwriterqueue.h"
 #include "twowayqueue.hpp"
+#include "gpu.hpp"
 
 // Define a unique event ID for our frame ticker
 Uint32 USEREVENT_NEXT_FRAME;
@@ -42,7 +43,6 @@ using WindowPtr = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
 using RendererPtr = std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)>;
 using TexturePtr = std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)>;
 using AudioStream = std::unique_ptr<SDL_AudioStream, decltype(&SDL_DestroyAudioStream)>;
-using RenderStatePtr = std::unique_ptr<SDL_GPURenderState, decltype(&SDL_DestroyGPURenderState)>;
 
 uint32_t SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, uint32_t interval);
 
@@ -68,10 +68,11 @@ struct AppState {
     RendererPtr renderer{nullptr, SDL_DestroyRenderer};
     TexturePtr texture{nullptr, SDL_DestroyTexture};
     AudioStream audio_stream{nullptr, SDL_DestroyAudioStream};
-    RenderStatePtr render_state{nullptr, SDL_DestroyGPURenderState};
 
     ff::VideoFile video;
+    GPUPipeline gpu;
     std::atomic<AVFrame *> video_frame;
+    AVFrame *current_frame = nullptr;
     TwowayQueue<Subtitle *> sub_queue;
     ff::AudioBuffer audio_buf;
     double tick_diff = 0;
@@ -314,6 +315,7 @@ struct AppState {
         auto subtitle_ctx = video.get_subtitle_ctx();
         if (subtitle_ctx)
             ass.init(target_w, target_h, subtitle_ctx);
+        gpu.init_pipeline(COMMON_FLAG); // todo: format check
 
 #ifdef _VIDEO_CONVERTER_THREAD_
         video_converter.start();

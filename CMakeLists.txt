@@ -28,6 +28,8 @@ set(IMGUI_SRCS
 set(SHADER_SOURCES
 #    shaders/lanczos-3.frag
     shaders/test.frag
+    shaders/vert.vert
+    shaders/common.frag
 )
 
 set(SPIRV_HEADER_FILES "")

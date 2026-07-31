@@ -243,7 +243,8 @@ class VideoScaler {
 
             case AV_PIX_FMT_YUV420P10LE: /* 10-bit – SDL has no exact match, treat as unsupported or convert */
             case AV_PIX_FMT_YUV420P10BE:
-                return AV_PIX_FMT_YUV420P;
+//                return AV_PIX_FMT_YUV420P;
+                return AV_PIX_FMT_NV12;
 
             case AV_PIX_FMT_P010LE:     /* 10-bit NV12-style */
             case AV_PIX_FMT_P010BE:
