@@ -107,7 +107,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     SDL_UpdateTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0]);
                     break;
             }*/
-            state->gpu.render(video_frame);
+            state->gpu.set_frame(video_frame);
+//            state->gpu.render();
         }
         return SDL_APP_CONTINUE;
     } else if (event->type == USEREVENT_SUBTITLE_ASS) {
@@ -261,43 +262,22 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 }
 
 SDL_AppResult SDL_AppIterate(void *appstate) {
-    return SDL_APP_CONTINUE;
     auto *state = static_cast<AppState*>(appstate);
 
-    int window_w = 0, window_h = 0;
-    float texture_w = 0, texture_h = 0;
-    SDL_FRect dst_rect;
-
-    SDL_GetRenderOutputSize(state->renderer.get(), &window_w, &window_h);
-    if (state->texture) {
-//        dst_rect.w = state->target_w;
-//        dst_rect.h = state->target_h;
-//        dst_rect.x = (window_w - dst_rect.w) / 2 + state->video_pan_x;
-//        dst_rect.y = (window_h - dst_rect.h) / 2 + state->video_pan_y;
-        dst_rect.x = 0;
-        dst_rect.y = 0;
-        dst_rect.w = window_w;
-        dst_rect.h = window_h;
-    }
-
-    // Render hardware elements
-    SDL_SetRenderDrawColor(state->renderer.get(), 50, 50, 50, 255);
-    SDL_RenderClear(state->renderer.get());
-    if (state->texture) {
-//        SDL_RenderTexture(state->renderer.get(), state->texture.get(), NULL, &dst_rect);
-    }
-
-    state->draw_ass();
+//    state->draw_ass();
     auto app_result = gui.draw();
-    SDL_RenderPresent(state->renderer.get());
-    return SDL_APP_CONTINUE;
+    if (app_result != SDL_APP_CONTINUE)
+        return app_result;
+    state->gpu.render();
+    return app_result;
 }
 
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     auto *state = static_cast<AppState*>(appstate);
     if (state) {
         state->shutdown();
-        SDL_WaitForGPUIdle(state->gpu.get_device());
+        gui.shutdown();
+//        SDL_WaitForGPUIdle(state->gpu.get_device());
         delete state;
     }
 }

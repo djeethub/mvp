@@ -1,6 +1,7 @@
 #pragma once
 
 #include <SDL3/SDL.h>
+#include "imgui_impl_sdlgpu3.h"
 
 // #include "lanczos-3.frag.h"
 #include "vert.vert.h"
@@ -25,6 +26,71 @@ struct CommonUniforms
 	int planar;
 };
 
+class GPUTransferQueue {
+public:
+	~GPUTransferQueue() {
+		clear();
+	}
+
+	struct Data {
+		SDL_GPUTransferBuffer *buf;
+		Uint32 size;
+	};
+
+	void init(SDL_GPUDevice *device) {
+		this->device = device;
+	}
+
+	Data *alloc(Uint32 size) {
+		for (auto it = list.begin(); it != list.end(); it++) {
+			auto t = (*it);
+			if (t->size >= size) {
+				list.erase(it);
+				return t;
+			}
+		}
+
+		SDL_GPUTransferBufferCreateInfo tb_info = {
+			.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+			.size = size,
+		};
+		SDL_GPUTransferBuffer *buf = SDL_CreateGPUTransferBuffer(device, &tb_info);
+		if (!buf)
+			return nullptr;
+		auto data = new Data{.buf = buf, .size = size};
+		return data;
+	}
+
+	void recycle(Data *data) {
+		list.push_back(data);
+	}
+
+	void recycle() {
+		for (auto t : in_use_list) {
+			list.push_back(t);
+		}
+		in_use_list.clear();
+	}
+
+	void in_use(Data *data) {
+		in_use_list.push_back(data);
+	}
+
+	void clear() {
+		recycle();
+		for (auto t : list) {
+			SDL_ReleaseGPUTransferBuffer(device, t->buf);
+			delete t;
+		}
+		list.clear();
+	}
+
+private:
+	std::vector<Data *> list;
+	std::vector<Data *> in_use_list;
+	SDL_GPUDevice *device;
+};
+
 class GPUPipeline
 {
 private:
@@ -39,6 +105,8 @@ private:
 	int width = 0;
 	int height = 0;
 	AVFrame *frame = nullptr;
+	int n_bindings = 0;
+	GPUTransferQueue transfer_queue;
 
 	SDL_GPUShader *load_shader(ShaderType type)
 	{
@@ -142,20 +210,15 @@ private:
 		Uint32 row_size = width * bytes_per_pixel;
 		Uint32 data_size = row_size * height;
 
-		// Create a temporary transfer buffer
-		SDL_GPUTransferBufferCreateInfo tb_info = {
-			.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-			.size = data_size,
-		};
-		SDL_GPUTransferBuffer *transfer = SDL_CreateGPUTransferBuffer(device, &tb_info);
-		if (!transfer)
+		auto buf_data = transfer_queue.alloc(data_size);
+		if (!buf_data)
 			return false;
 
 		// Map and copy
-		void *mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
+		void *mapped = SDL_MapGPUTransferBuffer(device, buf_data->buf, false);
 		if (!mapped)
 		{
-			SDL_ReleaseGPUTransferBuffer(device, transfer);
+			transfer_queue.recycle(buf_data);
 			return false;
 		}
 
@@ -169,13 +232,13 @@ private:
 			src += linesize;
 		}
 
-		SDL_UnmapGPUTransferBuffer(device, transfer);
+		SDL_UnmapGPUTransferBuffer(device, buf_data->buf);
 
 		// Copy to texture
 		SDL_GPUCopyPass *copy_pass = SDL_BeginGPUCopyPass(cmd);
 
 		SDL_GPUTextureTransferInfo src_info = {
-			.transfer_buffer = transfer,
+			.transfer_buffer = buf_data->buf,
 			.offset = 0,
 		};
 
@@ -189,9 +252,7 @@ private:
 		SDL_UploadToGPUTexture(copy_pass, &src_info, &dst_region, false);
 		SDL_EndGPUCopyPass(copy_pass);
 
-		// Transfer buffer can be released after submit,
-		// but for simplicity we release here (or keep a pool)
-		SDL_ReleaseGPUTransferBuffer(device, transfer);
+		transfer_queue.in_use(buf_data);
 
 		return true;
 	}
@@ -270,23 +331,78 @@ private:
 			   frame->format == AV_PIX_FMT_P010LE;
 	}
 
+	void prepare_texture_draw(SDL_GPUCommandBuffer *cmd) {
+		if (!frame)
+			return;
+		transfer_queue.recycle();
+		int bpp = is_10bit() ? 2 : 1;
+		create_texture(frame);
+
+		switch (pixel_format)
+		{
+		case AV_PIX_FMT_YUV420P:
+		case AV_PIX_FMT_YUV420P10LE:
+			upload_plane(cmd, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
+			upload_plane(cmd, frame->data[1], frame->linesize[1], uTexture, width / 2, height / 2, bpp);
+			upload_plane(cmd, frame->data[2], frame->linesize[2], vTexture, width / 2, height / 2, bpp);
+			n_bindings = 3;
+			break;
+
+		case AV_PIX_FMT_NV12:
+		case AV_PIX_FMT_P010LE:
+			upload_plane(cmd, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
+			upload_plane(cmd, frame->data[1], frame->linesize[1], uTexture, width / 2, height / 2, bpp * 2);
+			n_bindings = 2;
+			break;
+		}
+	}
+
+	void draw_texture(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *pass) {
+		if (!frame)
+			return;
+		SDL_BindGPUGraphicsPipeline(pass, pipeline);
+
+		// Bind textures + sampler
+		SDL_GPUTextureSamplerBinding bindings[3] = {
+			{.texture = yTexture, .sampler = sampler},
+			{.texture = uTexture, .sampler = sampler},
+			{.texture = vTexture, .sampler = sampler},
+		};
+		SDL_BindGPUFragmentSamplers(pass, 0, bindings, n_bindings);
+
+		push_uniforms(cmd, frame, 3.0f);
+
+		// Draw fullscreen triangle (3 vertices) or quad
+		SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+	}
+
 public:
 	~GPUPipeline()
 	{
+		shutdown();
+	}
+
+	void shutdown() {
+		if (!device)
+			return;
+		transfer_queue.clear();
 		destroy_textures();
 		if (sampler)
 			SDL_ReleaseGPUSampler(device, sampler);
+		sampler = nullptr;
 		if (pipeline)
 			SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
+		pipeline = nullptr;
 		if (device)
 			SDL_DestroyGPUDevice(device);
+		device = nullptr;
 		if (frame)
 			av_frame_free(&frame);
 	}
 
 	bool init(SDL_Window *window)
 	{
-		device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, true, nullptr);
+		device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, nullptr);
 		if (!device)
 		{
 			return false;
@@ -306,6 +422,7 @@ public:
 		};
 		sampler = SDL_CreateGPUSampler(device, &samp_info);
 		this->window = window;
+		transfer_queue.init(device);
 		return true;
 	}
 
@@ -325,52 +442,40 @@ public:
 		SDL_GPUShader *vs = load_shader(VERT);
 		SDL_GPUShader *fs = load_shader(type);
 
+		SDL_GPUColorTargetDescription color_target = {
+			.format = SDL_GetGPUSwapchainTextureFormat(device, window)
+		};
 		SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
 		pipe_info.vertex_shader = vs;
 		pipe_info.fragment_shader = fs;
 		pipe_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
 		pipe_info.target_info.num_color_targets = 1;
-		pipe_info.target_info.color_target_descriptions = (SDL_GPUColorTargetDescription[]){{.format = SDL_GetGPUSwapchainTextureFormat(device, window)}};
+		pipe_info.target_info.color_target_descriptions = &color_target;
 		// add blend state, rasterizer, etc. if needed
-
 		pipeline = SDL_CreateGPUGraphicsPipeline(device, &pipe_info);
 
 		SDL_ReleaseGPUShader(device, vs);
 		SDL_ReleaseGPUShader(device, fs);
+		transfer_queue.clear();
 		return true;
 	}
 
-	void render(AVFrame *frame)
+	void set_frame(AVFrame *frame) {
+		if (this->frame)
+			ff::frame_recycle(this->frame);
+		this->frame = frame;
+	}
+
+	void render()
 	{
 		SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
 		if (!cmd)
 			return;
 
-		if (this->frame)
-			ff::frame_recycle(this->frame);
-		this->frame = frame;
-
-		int bpp = is_10bit() ? 2 : 1;
-		create_texture(frame);
-
-		Uint32 n_bindings = 3;
-		switch (pixel_format)
-		{
-		case AV_PIX_FMT_YUV420P:
-		case AV_PIX_FMT_YUV420P10LE:
-			upload_plane(cmd, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
-			upload_plane(cmd, frame->data[1], frame->linesize[1], uTexture, width / 2, height / 2, bpp);
-			upload_plane(cmd, frame->data[2], frame->linesize[2], vTexture, width / 2, height / 2, bpp);
-			n_bindings = 3;
-			break;
-
-		case AV_PIX_FMT_NV12:
-		case AV_PIX_FMT_P010LE:
-			upload_plane(cmd, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
-			upload_plane(cmd, frame->data[1], frame->linesize[1], uTexture, width / 2, height / 2, bpp * 2);
-			n_bindings = 2;
-			break;
-		}
+		prepare_texture_draw(cmd);
+		// MANDATORY: Upload ImGui vertex/index buffers prior to the render pass
+		ImDrawData* draw_data = ImGui::GetDrawData();
+		ImGui_ImplSDLGPU3_PrepareDrawData(draw_data, cmd);
 
 		// ----- Get swapchain texture -----
 		SDL_GPUTexture *swapchain_tex = NULL;
@@ -383,23 +488,10 @@ public:
 				.load_op = SDL_GPU_LOADOP_CLEAR,
 				.store_op = SDL_GPU_STOREOP_STORE,
 			};
-
 			SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &color_target, 1, nullptr);
 
-			SDL_BindGPUGraphicsPipeline(pass, pipeline);
-
-			// Bind textures + sampler
-			SDL_GPUTextureSamplerBinding bindings[3] = {
-				{.texture = yTexture, .sampler = sampler},
-				{.texture = uTexture, .sampler = sampler},
-				{.texture = vTexture, .sampler = sampler},
-			};
-			SDL_BindGPUFragmentSamplers(pass, 0, bindings, n_bindings);
-
-			push_uniforms(cmd, frame, 3.0f);
-
-			// Draw fullscreen triangle (3 vertices) or quad
-			SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+			draw_texture(cmd, pass);
+			ImGui_ImplSDLGPU3_RenderDrawData(draw_data, cmd, pass);
 
 			SDL_EndGPURenderPass(pass);
 		}

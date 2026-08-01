@@ -63,7 +63,12 @@ class AppGui {
         AppGui() = default;
         ~AppGui()
         {
+            shutdown();
+        }
+
+        void shutdown() {
             if (state) {
+                state = nullptr;
                 ImGui_ImplSDLGPU3_Shutdown();
                 ImGui_ImplSDL3_Shutdown();
                 ImGui::DestroyContext();
