@@ -3,11 +3,13 @@
 #include <SDL3/SDL.h>
 
 //#include "lanczos-3.frag.h"
+#include "vert.vert.h"
 #include "common.frag.h"
 #include "test.frag.h"
 
 enum ShaderType {
-	COMMON,
+	VERT,
+	COMMON_FLAG,
 };
 
 struct CommonUniforms {
@@ -23,20 +25,93 @@ struct CommonUniforms {
 class GPUPipeline {
 private:
 	SDL_GPUDevice *device = nullptr;
-	SDL_Renderer *renderer = nullptr;
-	SDL_GPURenderState *state = nullptr;
-	SDL_Texture *texture = nullptr;
+	SDL_GPUGraphicsPipeline *pipeline = nullptr;
+	SDL_GPUSampler *sampler = nullptr;
+	SDL_Window *window = nullptr;
+	SDL_GPUTexture* yTexture = nullptr;
+    SDL_GPUTexture* uTexture = nullptr;
+    SDL_GPUTexture* vTexture = nullptr;
+	AVPixelFormat pixel_format = AV_PIX_FMT_NONE;
+	int width = 0;
+	int height = 0;
+
+public:
+	~GPUPipeline() {
+		destroy_textures();
+		if (sampler)
+			SDL_ReleaseGPUSampler(device, sampler);
+		if (pipeline)
+			SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
+		if (device)
+			SDL_DestroyGPUDevice(device);
+	}
+
+	bool init(SDL_Window *window) {
+        device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, true, nullptr);
+        if (!device) { return false; }
+        if (!SDL_ClaimWindowForGPUDevice(device, window)) {
+            SDL_Log("ClaimWindow failed: %s", SDL_GetError());
+            return false;
+        }
+
+        SDL_GPUSamplerCreateInfo samp_info = {
+            .min_filter = SDL_GPU_FILTER_LINEAR,
+            .mag_filter = SDL_GPU_FILTER_LINEAR,
+            .mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
+            .address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            .address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+        };
+        sampler = SDL_CreateGPUSampler(device, &samp_info);
+		this->window = window;
+		return true;
+	}
+
+	SDL_Renderer *create_renderer() {
+		return SDL_CreateGPURenderer(device, window);
+	}
+
+	bool init_pipeline(ShaderType type = COMMON_FLAG) {
+		if (pipeline) {
+			SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
+			pipeline = nullptr;
+		}
+
+        SDL_GPUShader* vs = load_shader(VERT);
+        SDL_GPUShader* fs = load_shader(type);
+
+        SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
+        pipe_info.vertex_shader   = vs;
+        pipe_info.fragment_shader = fs;
+        pipe_info.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        pipe_info.target_info.num_color_targets = 1;
+        pipe_info.target_info.color_target_descriptions = (SDL_GPUColorTargetDescription[]){{
+            .format = SDL_GetGPUSwapchainTextureFormat(device, window)
+        }};
+        // add blend state, rasterizer, etc. if needed
+
+        pipeline = SDL_CreateGPUGraphicsPipeline(device, &pipe_info);
+
+        SDL_ReleaseGPUShader(device, vs);
+        SDL_ReleaseGPUShader(device, fs);
+        return true;
+	}
 
 	SDL_GPUShader* load_shader(ShaderType type) {
 		SDL_GPUShaderCreateInfo shader_info = {
 			.entrypoint = "main",
 			.format = SDL_GPU_SHADERFORMAT_SPIRV,
-			.stage = SDL_GPU_SHADERSTAGE_FRAGMENT,
 		};
 
 		switch (type) {
-			case COMMON:
-				shader_info.num_samplers = 1;
+			case VERT:
+				shader_info.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+				shader_info.code = vert_vert;
+				shader_info.code_size = vert_vert_len;
+				break;
+
+			case COMMON_FLAG:
+				shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+				shader_info.num_samplers = 2;
 				shader_info.num_uniform_buffers = 1;
 				shader_info.code = test_frag;
 				shader_info.code_size = test_frag_len;
@@ -52,50 +127,97 @@ private:
 		return shader;
 	}
 
-    void create_texture(AVFrame *frame) {
-        if (!texture || texture->w != frame->width || texture->h != frame->height) {
-			SDL_DestroyTexture(texture);
-            auto sdl_format = ff::VideoScaler::av_to_sdl(static_cast<AVPixelFormat>(frame->format));
-            printf("texture format: %x\n", sdl_format);
-            texture = SDL_CreateTexture(
-                renderer,
-                sdl_format,
-                SDL_TEXTUREACCESS_STREAMING, 
-                frame->width,
-                frame->height
-            );
-        }
+	SDL_GPUTexture* create_plane_texture(int w, int h, SDL_GPUTextureFormat format) {
+        SDL_GPUTextureCreateInfo info = {};
+        info.type = SDL_GPU_TEXTURETYPE_2D;
+        info.format = format;
+        info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        info.width = static_cast<Uint32>(w);
+        info.height = static_cast<Uint32>(h);
+        info.layer_count_or_depth = 1;
+        info.num_levels = 1;
+
+        return SDL_CreateGPUTexture(device, &info);
     }
 
-	enum SDL_UpdateKind {
-		SDL_UPDATE_TEXTURE,   /* SDL_UpdateTexture  (packed / RGB) */
-		SDL_UPDATE_YUV,       /* SDL_UpdateYUVTexture (planar YUV) */
-		SDL_UPDATE_NV,        /* SDL_UpdateNVTexture  (NV12/NV21/P010) */
-		SDL_UPDATE_NONE
-	};
+	void destroy_textures() {
+        if (yTexture) SDL_ReleaseGPUTexture(device, yTexture);
+        if (uTexture) SDL_ReleaseGPUTexture(device, uTexture);
+        if (vTexture) SDL_ReleaseGPUTexture(device, vTexture);
+		yTexture = nullptr;
+		uTexture = nullptr;
+		vTexture = nullptr;
+    }
 
-	SDL_UpdateKind get_update_kind(SDL_PixelFormat format) {
-		switch (format) {
-			case SDL_PIXELFORMAT_IYUV:
-				return SDL_UPDATE_YUV;
+	void create_texture(AVFrame *frame) {
+		if (frame->format == pixel_format && frame->width == width || frame->height == height)
+			return;
 
-			case SDL_PIXELFORMAT_NV12:
-			case SDL_PIXELFORMAT_NV21:
-			case SDL_PIXELFORMAT_P010:
-				return SDL_UPDATE_NV;
+		destroy_textures();
+		pixel_format = static_cast<AVPixelFormat>(frame->format);
+		width = frame->width;
+		height = frame->height;
 
-			default:
-				return SDL_UPDATE_TEXTURE;
+		switch (pixel_format) {
+			case AV_PIX_FMT_YUV420P:
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				vTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				break;
+
+			case AV_PIX_FMT_NV12:
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8G8_UNORM);
+				break;
 		}
 	}
 
-	void push_uniforms(AVFrame *frame)
+	void upload_plane(SDL_GPUCommandBuffer* cmd, const uint8_t* srcData, int lineSize, SDL_GPUTexture* texture, int w, int h) {
+        Uint32 bufferSize = lineSize * h;
+
+        // Allocate transient Transfer Buffer for pixel copy
+        SDL_GPUTransferBufferCreateInfo tbInfo = {};
+        tbInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        tbInfo.size = bufferSize;
+
+        SDL_GPUTransferBuffer* transferBuf = SDL_CreateGPUTransferBuffer(device, &tbInfo);
+        
+        // Copy CPU AVFrame plane -> Mapped GPU Memory
+        uint8_t* dst = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(device, transferBuf, false));
+        SDL_memcpy(dst, srcData, bufferSize);
+        SDL_UnmapGPUTransferBuffer(device, transferBuf);
+
+        // Record Copy Pass
+        SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(cmd);
+        
+        SDL_GPUTextureTransferInfo srcInfo = {};
+        srcInfo.transfer_buffer = transferBuf;
+        srcInfo.rows_per_layer = h;
+        srcInfo.pixels_per_row = lineSize; // Accounts for AVFrame stride alignment
+
+        SDL_GPUTextureRegion dstRegion = {};
+        dstRegion.texture = texture;
+        dstRegion.w = w;
+        dstRegion.h = h;
+        dstRegion.d = 1;
+
+        SDL_UploadToGPUTexture(copyPass, &srcInfo, &dstRegion, false);
+        SDL_EndGPUCopyPass(copyPass);
+
+        // Release transfer buffer asynchronously when command finishes execution
+        SDL_ReleaseGPUTransferBuffer(device, transferBuf);
+	}
+
+	void push_uniforms(
+		SDL_GPUCommandBuffer* cmd,
+		const AVFrame* frame,
+		float lobes)
 	{
 		CommonUniforms u = {0};
 
 		u.tex_size[0] = (float)frame->width;
 		u.tex_size[1] = (float)frame->height;
-		u.lobes       = 3;
+		u.lobes       = lobes;
 
 		// Bit depth
 		switch (frame->format) {
@@ -133,97 +255,66 @@ private:
 
 		u.chroma_offset = 0; // or detect from frame->chroma_location
 
-		SDL_SetGPURenderStateFragmentUniforms(state, 0, &u, sizeof(u));
-	}		
+		// Push to fragment uniform slot 0
+		SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof(u));
+	}	
 
-public:
-	~GPUPipeline() {
-		if (texture)
-			SDL_DestroyTexture(texture);
-		if (state)
-			SDL_DestroyGPURenderState(state);
-	}
+	void render(AVFrame *frame) {
+		SDL_Log("pts: %i\n", frame->pts);
+		SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device);
+		if (!cmd) return;
 
-	bool init(SDL_Renderer *renderer) {
-		device = SDL_GetGPURendererDevice(renderer);
-		if (!device)
-			return false;
-		this->renderer = renderer;
-		return true;
-	}
-
-	bool create_render_state(ShaderType type) {
-		if (state) {
-			SDL_DestroyGPURenderState(state);
-			state = nullptr;
-		}
-
-		// Choose format based on what the device supports
-		SDL_GPUShaderFormat formats = SDL_GetGPUShaderFormats(device);
-
-		if (formats & SDL_GPU_SHADERFORMAT_SPIRV) {
-		} else if (formats & SDL_GPU_SHADERFORMAT_DXIL) {
-			// DXIL version...
-			return false;
-		} else if (formats & SDL_GPU_SHADERFORMAT_MSL) {
-			return false;
-		}
-
-		SDL_GPUShader* frag_shader = load_shader(type);
-		if (!frag_shader) {
-			SDL_Log("SDL_CreateGPUShader failed: %s", SDL_GetError());
-			return false;
-		}
-
-		SDL_GPURenderStateCreateInfo state_info = {0};
-		state_info.fragment_shader = frag_shader;
-
-		state = SDL_CreateGPURenderState(renderer, &state_info);
-		if (!state) {
-			SDL_Log("SDL_CreateGPURenderState failed: %s", SDL_GetError());
-			SDL_ReleaseGPUShader(device, state_info.fragment_shader);
-			return false;
-		}
-
-		return true;
-	}
-
-	void set_frame(AVFrame *frame) {
 		create_texture(frame);
-		switch (get_update_kind(texture->format)) {
-			case SDL_UPDATE_NV:
-				SDL_UpdateNVTexture(texture, nullptr, frame->data[0], frame->linesize[0], frame->data[1], frame->linesize[1]);
+
+		Uint32 n_bindings = 3;
+		switch (pixel_format) {
+			case AV_PIX_FMT_YUV420P:
+				upload_plane(cmd, frame->data[0], frame->linesize[0], yTexture, width, height);
+				upload_plane(cmd, frame->data[1], frame->linesize[1], uTexture, width/2, height/2);
+				upload_plane(cmd, frame->data[2], frame->linesize[2], vTexture, width/2, height/2);
+				n_bindings = 3;
 				break;
-			case SDL_UPDATE_YUV:
-				SDL_UpdateYUVTexture(texture, nullptr, frame->data[0], frame->linesize[0], frame->data[1], frame->linesize[1], frame->data[2], frame->linesize[2]);
+
+			case AV_PIX_FMT_NV12:
+				upload_plane(cmd, frame->data[0], frame->linesize[0], yTexture, width, height);
+				upload_plane(cmd, frame->data[1], frame->linesize[1], uTexture, width/2, height/2);
+				n_bindings = 2;
 				break;
-			default:
-				SDL_UpdateTexture(texture, nullptr, frame->data[0], frame->linesize[0]);
-				break;
+			}
+
+		// ----- Get swapchain texture -----
+		SDL_GPUTexture* swapchain_tex = NULL;
+		Uint32 w, h;
+		if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swapchain_tex, &w, &h)) {
+			SDL_GPUColorTargetInfo color_target = {
+				.texture = swapchain_tex,
+				.clear_color = {0.0f, 0.0f, 0.0f, 1.0f},
+				.load_op = SDL_GPU_LOADOP_CLEAR,
+				.store_op = SDL_GPU_STOREOP_STORE,
+			};
+
+			SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color_target, 1, nullptr);
+
+			SDL_BindGPUGraphicsPipeline(pass, pipeline);
+
+			// Bind textures + sampler
+			SDL_GPUTextureSamplerBinding bindings[3] = {
+				{ .texture = yTexture, .sampler = sampler },
+				{ .texture = uTexture, .sampler = sampler },
+				{ .texture = vTexture, .sampler = sampler },
+			};
+			SDL_BindGPUFragmentSamplers(pass, 0, bindings, n_bindings);
+
+			push_uniforms(cmd, frame, 3.0f);
+
+			// Draw fullscreen triangle (3 vertices) or quad
+			SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+
+			SDL_EndGPURenderPass(pass);
 		}
-		push_uniforms(frame);
-	}
 
-	void render() {
-		if (!texture)
-			return;
-
-		int window_w = 0, window_h = 0;
-		float texture_w = 0, texture_h = 0;
-		SDL_FRect dst_rect;
-		SDL_GetRenderOutputSize(renderer, &window_w, &window_h);
-	//        dst_rect.w = state->target_w;
-	//        dst_rect.h = state->target_h;
-	//        dst_rect.x = (window_w - dst_rect.w) / 2 + state->video_pan_x;
-	//        dst_rect.y = (window_h - dst_rect.h) / 2 + state->video_pan_y;
-		dst_rect.x = 0;
-		dst_rect.y = 0;
-		dst_rect.w = window_w;
-		dst_rect.h = window_h;
-
-//        SDL_SetTextureScaleMode(state->texture.get(), SDL_SCALEMODE_LINEAR);
-        SDL_SetGPURenderState(renderer, state);
-        SDL_RenderTexture(renderer, texture, NULL, &dst_rect);
-        SDL_SetGPURenderState(renderer, nullptr);
+		if (!SDL_SubmitGPUCommandBuffer(cmd)) {
+            SDL_Log("SDL_SubmitGPUCommandBuffer failed: %s", SDL_GetError());
+		}
 	}
 };
