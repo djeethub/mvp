@@ -52,10 +52,10 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     state->window.reset(SDL_CreateWindow("miv", 800, 600, window_flags));
     if (!state->window) { return SDL_APP_FAILURE; }
 
-    state->gpu.init(state->window.get());
-
-    state->renderer.reset(state->gpu.create_renderer());
+    state->renderer.reset(SDL_CreateRenderer(state->window.get(), "gpu"));
     if (!state->renderer) { return SDL_APP_FAILURE; }
+
+    state->gpu.init(state->renderer.get());
 
     SDL_SetWindowHitTest(state->window.get(), WindowHitTest, nullptr);
 
@@ -65,28 +65,6 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     return SDL_APP_CONTINUE;
 }
 
-enum SDL_UpdateKind {
-    SDL_UPDATE_TEXTURE,   /* SDL_UpdateTexture  (packed / RGB) */
-    SDL_UPDATE_YUV,       /* SDL_UpdateYUVTexture (planar YUV) */
-    SDL_UPDATE_NV,        /* SDL_UpdateNVTexture  (NV12/NV21/P010) */
-    SDL_UPDATE_NONE
-};
-
-SDL_UpdateKind get_update_kind(SDL_PixelFormat format) {
-    switch (format) {
-        case SDL_PIXELFORMAT_IYUV:
-            return SDL_UPDATE_YUV;
-
-        case SDL_PIXELFORMAT_NV12:
-        case SDL_PIXELFORMAT_NV21:
-        case SDL_PIXELFORMAT_P010:
-            return SDL_UPDATE_NV;
-
-        default:
-            return SDL_UPDATE_TEXTURE;
-    }
-}
-
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     auto *state = static_cast<AppState*>(appstate);
     ImGui_ImplSDL3_ProcessEvent(event);
@@ -94,22 +72,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     if (event->type == USEREVENT_NEXT_FRAME) {
         auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
         if (video_frame) {
-//            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
-/*            state->create_texture(video_frame);
-            switch (get_update_kind(state->texture->format)) {
-                case SDL_UPDATE_NV:
-                    SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
-                    break;
-                case SDL_UPDATE_YUV:
-                    SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
-                    break;
-                default:
-                    SDL_UpdateTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0]);
-                    break;
-            }*/
-            if (state->current_frame)
-                ff::frame_recycle(state->current_frame);
-            state->current_frame = video_frame;
+            state->gpu.set_frame(video_frame);
+            ff::frame_recycle(video_frame);
         }
         return SDL_APP_CONTINUE;
     } else if (event->type == USEREVENT_SUBTITLE_ASS) {
@@ -268,33 +232,10 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 SDL_AppResult SDL_AppIterate(void *appstate) {
     auto *state = static_cast<AppState*>(appstate);
 
-    int window_w = 0, window_h = 0;
-    float texture_w = 0, texture_h = 0;
-    SDL_FRect dst_rect;
-
-    SDL_GetRenderOutputSize(state->renderer.get(), &window_w, &window_h);
-    if (state->texture) {
-//        dst_rect.w = state->target_w;
-//        dst_rect.h = state->target_h;
-//        dst_rect.x = (window_w - dst_rect.w) / 2 + state->video_pan_x;
-//        dst_rect.y = (window_h - dst_rect.h) / 2 + state->video_pan_y;
-        dst_rect.x = 0;
-        dst_rect.y = 0;
-        dst_rect.w = window_w;
-        dst_rect.h = window_h;
-    }
-
     // Render hardware elements
     SDL_SetRenderDrawColor(state->renderer.get(), 50, 50, 50, 255);
     SDL_RenderClear(state->renderer.get());
-    if (state->texture) {
-//        SDL_RenderTexture(state->renderer.get(), state->texture.get(), NULL, &dst_rect);
-    }
-
-    if (state->current_frame) {
-        SDL_FlushRenderer(state->renderer.get());
-        state->gpu.render(state->current_frame);
-    }
+    state->gpu.render();
 
     state->draw_ass();
     auto app_result = gui.draw();

@@ -72,7 +72,6 @@ struct AppState {
     ff::VideoFile video;
     GPUPipeline gpu;
     std::atomic<AVFrame *> video_frame;
-    AVFrame *current_frame = nullptr;
     TwowayQueue<Subtitle *> sub_queue;
     ff::AudioBuffer audio_buf;
     double tick_diff = 0;
@@ -315,7 +314,7 @@ struct AppState {
         auto subtitle_ctx = video.get_subtitle_ctx();
         if (subtitle_ctx)
             ass.init(target_w, target_h, subtitle_ctx);
-        gpu.init_pipeline(COMMON_FLAG); // todo: format check
+        gpu.create_render_state(COMMON); // todo: format check
 
 #ifdef _VIDEO_CONVERTER_THREAD_
         video_converter.start();
@@ -779,20 +778,5 @@ struct AppState {
         target_h = base_h * scale;
         video.set_target_size(target_w, target_h);
         ass.set_target_size(target_w, target_h);
-    }
-
-    void create_texture(AVFrame *frame) {
-        if (!texture || texture->w != frame->width || texture->h != frame->height) {
-            auto sdl_format = ff::VideoScaler::av_to_sdl(static_cast<AVPixelFormat>(frame->format));
-            printf("texture format: %x\n", sdl_format);
-            SDL_Texture* tex = SDL_CreateTexture(
-                renderer.get(),
-                sdl_format,
-                SDL_TEXTUREACCESS_STREAMING, 
-                frame->width,
-                frame->height
-            );
-            texture.reset(tex);
-        }
     }
 };
