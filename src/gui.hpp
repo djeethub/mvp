@@ -7,7 +7,7 @@
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
-#include <imgui_impl_sdlrenderer3.h>
+#include "imgui_impl_sdlgpu3.h"
 #include <SDL3/SDL.h>
 
 #include "appstate.hpp"
@@ -64,7 +64,7 @@ class AppGui {
         ~AppGui()
         {
             if (state) {
-                ImGui_ImplSDLRenderer3_Shutdown();
+                ImGui_ImplSDLGPU3_Shutdown();
                 ImGui_ImplSDL3_Shutdown();
                 ImGui::DestroyContext();
             }
@@ -151,8 +151,12 @@ class AppGui {
 //            if (subtitleFont == nullptr) subtitleFont = io.Fonts->AddFontDefault();            
 
             // Setup Platform/Renderer Backends
-            ImGui_ImplSDL3_InitForSDLRenderer(state->window.get(), state->renderer.get());
-            ImGui_ImplSDLRenderer3_Init(state->renderer.get());
+            ImGui_ImplSDL3_InitForSDLGPU(state->window.get());
+            ImGui_ImplSDLGPU3_InitInfo init_info = {};
+            init_info.Device = state->gpu.get_device();
+            init_info.ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(state->gpu.get_device(), state->window.get());
+            init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
+            ImGui_ImplSDLGPU3_Init(&init_info);
         }
 
         static void DrawTextWithOutline(ImDrawList* draw_list, ImFont* font, float font_size, ImVec2 screen_pos, const char* text, ImU32 text_color, ImU32 outline_color, float stroke_thickness) {
@@ -193,7 +197,7 @@ class AppGui {
             ImGuiIO &io = ImGui::GetIO();
 
             // Start ImGui Frame Rendering Chain
-            ImGui_ImplSDLRenderer3_NewFrame();
+            ImGui_ImplSDLGPU3_NewFrame();
             ImGui_ImplSDL3_NewFrame();
             ImGui::NewFrame();
 
@@ -340,7 +344,7 @@ class AppGui {
             }
 
             ImGui::Render();
-            ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), state->renderer.get());
+//            ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), state->renderer.get());
             return SDL_APP_CONTINUE;
         }
 

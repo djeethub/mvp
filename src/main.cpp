@@ -54,8 +54,8 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
 
     state->gpu.init(state->window.get());
 
-    state->renderer.reset(state->gpu.create_renderer());
-    if (!state->renderer) { return SDL_APP_FAILURE; }
+//    state->renderer.reset(state->gpu.create_renderer());
+//    if (!state->renderer) { return SDL_APP_FAILURE; }
 
     SDL_SetWindowHitTest(state->window.get(), WindowHitTest, nullptr);
 
@@ -107,9 +107,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     SDL_UpdateTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0]);
                     break;
             }*/
-            if (state->current_frame)
-                ff::frame_recycle(state->current_frame);
-            state->current_frame = video_frame;
+            state->gpu.render(video_frame);
         }
         return SDL_APP_CONTINUE;
     } else if (event->type == USEREVENT_SUBTITLE_ASS) {
@@ -165,19 +163,16 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     break;
                 case SDLK_KP_9:
                     state->video_scale += SCALE_N;
-                    state->set_target_size();
                     gui.show_noti(std::format("Video Scale: {:.2f}", state->video_scale));
                     break;
                 case SDLK_KP_1:
                     state->video_scale -= SCALE_N;
-                    state->set_target_size();
                     gui.show_noti(std::format("Video Scale: {:.2f}", state->video_scale));
                     break;
                 case SDLK_KP_5:
                     state->video_pan_x = 0;
                     state->video_pan_y = 0;
                     state->video_scale = 1;
-                    state->set_target_size();
                     gui.show_noti("Video Reset");
                     break;
                 case SDLK_KP_4:
@@ -266,6 +261,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 }
 
 SDL_AppResult SDL_AppIterate(void *appstate) {
+    return SDL_APP_CONTINUE;
     auto *state = static_cast<AppState*>(appstate);
 
     int window_w = 0, window_h = 0;
@@ -291,11 +287,6 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
 //        SDL_RenderTexture(state->renderer.get(), state->texture.get(), NULL, &dst_rect);
     }
 
-    if (state->current_frame) {
-        SDL_FlushRenderer(state->renderer.get());
-        state->gpu.render(state->current_frame);
-    }
-
     state->draw_ass();
     auto app_result = gui.draw();
     SDL_RenderPresent(state->renderer.get());
@@ -306,6 +297,7 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     auto *state = static_cast<AppState*>(appstate);
     if (state) {
         state->shutdown();
+        SDL_WaitForGPUIdle(state->gpu.get_device());
         delete state;
     }
 }

@@ -242,13 +242,14 @@ class VideoScaler {
                 return fmt;
 
             case AV_PIX_FMT_YUV420P10LE: /* 10-bit – SDL has no exact match, treat as unsupported or convert */
-            case AV_PIX_FMT_YUV420P10BE:
-//                return AV_PIX_FMT_YUV420P;
-                return AV_PIX_FMT_NV12;
-
             case AV_PIX_FMT_P010LE:     /* 10-bit NV12-style */
+                return fmt;
+
+            case AV_PIX_FMT_YUV420P10BE:
+                return AV_PIX_FMT_YUV420P10LE;
+                
             case AV_PIX_FMT_P010BE:
-                return AV_PIX_FMT_NV12;
+                return AV_PIX_FMT_P010LE;
 
             /* Planar YUV 4:2:2 / 4:4:4 – no direct SDL equivalent */
             case AV_PIX_FMT_YUV422P:
@@ -344,7 +345,7 @@ class VideoScaler {
             sws_free_context(&sws_ctx);
             sws_ctx = sws_getContext(
                 frame->width, frame->height, static_cast<AVPixelFormat>(frame->format), // True source format
-                width, height, finalPixelFormat,       // True target format
+                width, height, av_sup_fmt(static_cast<AVPixelFormat>(frame->format)),       // True target format
                 SWS_LANCZOS, nullptr, nullptr, nullptr);
                 
             return sws_ctx != nullptr;
@@ -386,13 +387,11 @@ class VideoScaler {
 //            hw_scaler.clear();
         }
 
-        void set_target_size(AVCodecContext *dec_ctx, int width, int height) {
-        }
-
         AVFrame *dl_frame(AVFrame *frame) {
             auto new_frame = frame_alloc();
-            new_frame->format = finalPixelFormat;
-            av_hwframe_transfer_data(new_frame, frame, 0);
+//            new_frame->format = finalPixelFormat;
+            auto err = av_hwframe_transfer_data(new_frame, frame, 0);
+            if (err != 0) SDL_Log("av_hwframe_transfer_data failed: %s\n", av_err2str(err));
             new_frame->pts = frame->pts;
             new_frame->duration = frame->duration;
             return new_frame;
@@ -400,22 +399,7 @@ class VideoScaler {
 
         AVFrame *scale(AVFrame *frame, int width, int height) {
             if (frame->format == AV_PIX_FMT_VAAPI) {
-                auto sw_frame = dl_frame(frame);
-                auto new_frame = scale(sw_frame, width, height);
-                frame_recycle(sw_frame);
-                return new_frame;
-/*
-                if (width == frame->width && height == frame->height)
-                {
-                    auto new_frame = av_frame_alloc();
-                    av_frame_move_ref(new_frame, frame);
-                    return new_frame;
-                }
-                
-                auto new_frame = hw_scaler.process_frame(frame, width, height);
-                new_frame->pts = frame->pts;
-                new_frame->duration = frame->duration;
-                return new_frame;*/
+                return dl_frame(frame);
             } else {
                 if (frame->format == finalPixelFormat && width == frame->width && height == frame->height)
                 {

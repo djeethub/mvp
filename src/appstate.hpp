@@ -72,7 +72,6 @@ struct AppState {
     ff::VideoFile video;
     GPUPipeline gpu;
     std::atomic<AVFrame *> video_frame;
-    AVFrame *current_frame = nullptr;
     TwowayQueue<Subtitle *> sub_queue;
     ff::AudioBuffer audio_buf;
     double tick_diff = 0;
@@ -96,10 +95,6 @@ struct AppState {
     std::future<DirData *> dir_future;
     static inline const std::unordered_set<std::string> video_exts = { ".mp4", ".mkv", ".mov", ".flv", ".wmv", ".webm" };
     static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif" };
-    int base_w;
-    int base_h;
-    int target_w;
-    int target_h;
     MediaMode media_mode;
 
     AppState() : sub_queue(32) {
@@ -310,8 +305,9 @@ struct AppState {
         chapter_list = video.read_chapters();
 
         resize_window();
+        int target_w, target_h;
+        video.get_video_dimensions(target_w, target_h);
         SDL_SetWindowTitle(window.get(), file_path.c_str());
-        video.set_target_size(target_w, target_h);
         auto subtitle_ctx = video.get_subtitle_ctx();
         if (subtitle_ctx)
             ass.init(target_w, target_h, subtitle_ctx);
@@ -413,7 +409,7 @@ struct AppState {
                     if (frame->pts * video.get_video_time_base() < play_time) {
                         return;
                     }
-                    AVFrame *new_frame = video.scale_video_frame(frame, target_w, target_h);
+                    AVFrame *new_frame = video.scale_video_frame(frame, frame->width, frame->height);
                     video.video_frame_queue.push(new_frame);
                 });
 #endif
@@ -721,12 +717,6 @@ struct AppState {
 
         SDL_SetWindowSize(window.get(), target_w, target_h);
         SDL_SetWindowPosition(window.get(), new_x, new_y);
-        base_w = img_w;
-        base_h = img_h;
-//        AppState::target_w = target_w;
-//        AppState::target_h = target_h;
-        AppState::target_w = img_w;
-        AppState::target_h = img_h;
     }
 
     void pause() {
@@ -768,17 +758,6 @@ struct AppState {
 //                SDL_FlushAudioStream(audio_stream.get());
             video.select_audio(idx);
         }
-    }
-
-    void set_target_size() {
-        int window_w, window_h;
-        SDL_GetRenderOutputSize(renderer.get(), &window_w, &window_h);
-        float scale = SDL_max(static_cast<float>(window_w) / base_w, static_cast<float>(window_h) / base_h) * video_scale;
-        std::lock_guard<std::mutex> lock(fetch_mutex);
-        target_w = base_w * scale;
-        target_h = base_h * scale;
-        video.set_target_size(target_w, target_h);
-        ass.set_target_size(target_w, target_h);
     }
 
     void create_texture(AVFrame *frame) {

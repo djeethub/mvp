@@ -559,10 +559,6 @@ public:
         video_codec_ctx->skip_idct = idct;
     }
 
-    void set_target_size(int width, int height) {
-        video_scaler.set_target_size(video_codec_ctx, width, height);
-    }
-
 private:
     AVFormatContext* format_ctx = nullptr;
     AVCodecContext* audio_codec_ctx = nullptr;

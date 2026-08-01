@@ -2,7 +2,8 @@
 
 // Texture bindings
 layout(set = 2, binding = 0) uniform sampler2D u_tex_y;   // Y or RGB
-layout(set = 2, binding = 1) uniform sampler2D u_tex_uv;  // UV (optional)
+layout(set = 2, binding = 1) uniform sampler2D u_tex_u;
+//layout(set = 2, binding = 2) uniform sampler2D u_tex_v;
 
 // Uniforms
 layout(set = 3, binding = 0) uniform Uniforms {
@@ -13,14 +14,14 @@ layout(set = 3, binding = 0) uniform Uniforms {
     int   is_full_range;   // 1 = full range, 0 = limited
     int   matrix_id;       // 0 = BT.601, 1 = BT.709, 2 = BT.2020
     int   chroma_offset;   // 0 = co-sited, 1 = centered (optional)
+    int   planar;          // 0 = Planar (YUV420P), 1 = Semi-Planar (NV12/P010)
 } ubo;
 
-layout(location = 0) in vec4 v_color;
-layout(location = 1) in vec2 v_uv;
+layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 o_color;
 
 vec3 yuv_to_rgb(float y, float u, float v) {
-    // Scale according to bit depth
+/*    // Scale according to bit depth
     float max_val = exp2(ubo.bit_depth) - 1.0;
     y /= max_val;
     u /= max_val;
@@ -32,7 +33,7 @@ vec3 yuv_to_rgb(float y, float u, float v) {
         u = (u - 16.0/255.0) / (240.0/255.0 - 16.0/255.0);
         v = (v - 16.0/255.0) / (240.0/255.0 - 16.0/255.0);
     }
-
+*/
     u -= 0.5;
     v -= 0.5;
 
@@ -62,8 +63,18 @@ vec3 yuv_to_rgb(float y, float u, float v) {
 }
 
 void main() {
-    vec4 r = textureLod(u_tex_y, v_uv, 1.0);
-    vec4 rg = textureLod(u_tex_uv, v_uv, 1.0);
-//    vec3 rgb = yuv_to_rgb(r.r, rg.r, rg.g);
-    o_color = vec4(r.r, rg.r, rg.g, 1.0);
+    float y = texture(u_tex_y, v_uv).r;
+    float u = 0.0;
+    float v = 0.0;
+    if (ubo.planar == 1) {
+        vec2 uv_sampled = texture(u_tex_u, v_uv).rg; 
+        u = uv_sampled.r;
+        v = uv_sampled.g;
+    } else {
+//        u = texture(u_tex_v, v_uv).r;
+//        v = texture(u_tex_v, v_uv).r;
+    }
+
+    vec3 rgb = yuv_to_rgb(y, u, v);
+    o_color = vec4(rgb.r, rgb.g, rgb.b, 1.0);
 }
