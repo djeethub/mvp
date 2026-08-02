@@ -345,7 +345,7 @@ class VideoScaler {
             sws_free_context(&sws_ctx);
             sws_ctx = sws_getContext(
                 frame->width, frame->height, static_cast<AVPixelFormat>(frame->format), // True source format
-                width, height, av_sup_fmt(static_cast<AVPixelFormat>(frame->format)),       // True target format
+                width, height, finalPixelFormat,       // True target format
                 SWS_LANCZOS, nullptr, nullptr, nullptr);
                 
             return sws_ctx != nullptr;

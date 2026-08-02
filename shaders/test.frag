@@ -3,7 +3,7 @@
 // Texture bindings
 layout(set = 2, binding = 0) uniform sampler2D u_tex_y;   // Y or RGB
 layout(set = 2, binding = 1) uniform sampler2D u_tex_u;
-//layout(set = 2, binding = 2) uniform sampler2D u_tex_v;
+layout(set = 2, binding = 2) uniform sampler2D u_tex_v;
 
 // Uniforms
 layout(set = 3, binding = 0) uniform Uniforms {
@@ -15,7 +15,7 @@ layout(set = 3, binding = 0) uniform Uniforms {
     int   matrix_id;       // 0 = BT.601, 1 = BT.709, 2 = BT.2020
     int   chroma_offset;   // 0 = co-sited, 1 = centered (optional)
     int   planar;          // 0 = Planar (YUV420P), 1 = Semi-Planar (NV12/P010)
-} ubo;
+} uf;
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 o_color;
@@ -38,43 +38,32 @@ vec3 yuv_to_rgb(float y, float u, float v) {
     v -= 0.5;
 
     // Color matrix
-    vec3 rgb;
-    if (ubo.matrix_id == 0) {          // BT.601
-        rgb = vec3(
-            y + 1.402 * v,
-            y - 0.344 * u - 0.714 * v,
-            y + 1.772 * u
-        );
-    } else if (ubo.matrix_id == 1) {   // BT.709
-        rgb = vec3(
-            y + 1.5748 * v,
-            y - 0.1873 * u - 0.4681 * v,
-            y + 1.8556 * u
-        );
-    } else {                         // BT.2020
-        rgb = vec3(
-            y + 1.4746 * v,
-            y - 0.1646 * u - 0.5714 * v,
-            y + 1.8814 * u
-        );
-    }
+    vec3 rgb = vec3(
+        y + 1.596 * v,
+        y - 0.813 * v - 0.391 * u,
+        y + 2.018 * u
+    );
 
     return clamp(rgb, 0.0, 1.0);
 }
 
 void main() {
-    float y = texture(u_tex_y, v_uv).r;
-    float u = 0.0;
-    float v = 0.0;
-    if (ubo.planar == 1) {
-        vec2 uv_sampled = texture(u_tex_u, v_uv).rg; 
-        u = uv_sampled.r;
-        v = uv_sampled.g;
+    if (uf.is_rgb == 1) {
+        o_color = texture(u_tex_y, v_uv);
     } else {
-//        u = texture(u_tex_v, v_uv).r;
-//        v = texture(u_tex_v, v_uv).r;
-    }
+        float y = texture(u_tex_y, v_uv).r;
+        float u = 0.0;
+        float v = 0.0;
+        if (uf.planar == 1) {
+            vec2 uv_sampled = texture(u_tex_u, v_uv).rg; 
+            u = uv_sampled.r;
+            v = uv_sampled.g;
+        } else {
+    //        u = texture(u_tex_v, v_uv).r;
+    //        v = texture(u_tex_v, v_uv).r;
+        }
 
-    vec3 rgb = yuv_to_rgb(y, u, v);
-    o_color = vec4(rgb.r, rgb.g, rgb.b, 1.0);
+        vec3 rgb = yuv_to_rgb(y, u, v);
+        o_color = vec4(rgb.r, rgb.g, rgb.b, 1.0);
+    }
 }

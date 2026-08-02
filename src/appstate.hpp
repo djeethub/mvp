@@ -307,7 +307,6 @@ struct AppState {
         resize_window();
         SDL_SetWindowTitle(window.get(), file_path.c_str());
         
-        gpu.init_pipeline(COMMON_FLAG); // todo: format check
         auto subtitle_ctx = video.get_subtitle_ctx();
         if (subtitle_ctx) {
             int target_w, target_h;

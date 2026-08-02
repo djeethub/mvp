@@ -58,11 +58,11 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
 //    state->renderer.reset(state->gpu.create_renderer());
 //    if (!state->renderer) { return SDL_APP_FAILURE; }
 
-    SDL_SetWindowHitTest(state->window.get(), WindowHitTest, nullptr);
 
     if (!state->open_file(argv[1])) { return SDL_APP_FAILURE; }
     gui.init(state);
     SDL_ShowWindow(state->window.get());
+    SDL_SetWindowHitTest(state->window.get(), WindowHitTest, nullptr);
     return SDL_APP_CONTINUE;
 }
 
@@ -275,9 +275,10 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     auto *state = static_cast<AppState*>(appstate);
     if (state) {
+        SDL_SetWindowHitTest(state->window.get(), nullptr, nullptr);
         state->shutdown();
-        gui.shutdown();
         ass.shutdown();
+        gui.shutdown();
 //        SDL_WaitForGPUIdle(state->gpu.get_device());
         delete state;
     }

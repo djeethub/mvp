@@ -32,6 +32,9 @@ set(SHADER_SOURCES
     shaders/common.frag
     shaders/ass.vert
     shaders/ass.frag
+    shaders/rgb.frag
+    shaders/nv12.frag
+    shaders/yuv.frag
 )
 
 set(SPIRV_HEADER_FILES "")

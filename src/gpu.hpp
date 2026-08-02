@@ -5,27 +5,25 @@
 
 // #include "lanczos-3.frag.h"
 #include "vert.vert.h"
-#include "common.frag.h"
-#include "test.frag.h"
+#include "nv12.frag.h"
+#include "rgb.frag.h"
+#include "yuv.frag.h"
 
 extern AssHandler ass;
 
 enum ShaderType
 {
 	VERT,
-	COMMON_FLAG,
+	RGB_FRAG,
+	NV12_FRAG,
+	YUV_FRAG
 };
 
-struct CommonUniforms
+struct Uniforms
 {
 	float tex_size[2]; // width, height of Y plane
-	float lobes;	   // 2.0 or 3.0
-	float bit_depth;   // 8.0 or 10.0
-	int is_rgb;		   // 1 = RGB path, 0 = YUV
 	int is_full_range; // 1 = full range, 0 = limited
 	int matrix_id;	   // 0 = BT.601, 1 = BT.709, 2 = BT.2020
-	int chroma_offset; // optional, 0 or 1
-	int planar;
 };
 
 class GPUTransferQueue {
@@ -110,6 +108,18 @@ private:
 	AVFrame *frame = nullptr;
 	int n_bindings = 0;
 	GPUTransferQueue transfer_queue;
+	SwsContext *sws_ctx = nullptr;
+
+	bool setup_sws_context(AVPixelFormat src_fmt, AVPixelFormat dst_fmt) {
+		sws_free_context(&sws_ctx);
+		sws_ctx = sws_getContext(
+			width, height, src_fmt,       // Source video specs
+			width, height, dst_fmt,        // Destination specs (GPU friendly)
+			SWS_BILINEAR,                          // Fast filter (since size is identical)
+			NULL, NULL, NULL
+		);
+		return sws_ctx != nullptr;
+	}
 
 	SDL_GPUShader *load_shader(ShaderType type)
 	{
@@ -126,12 +136,28 @@ private:
 			shader_info.code_size = vert_vert_len;
 			break;
 
-		case COMMON_FLAG:
+		case NV12_FRAG:
 			shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
 			shader_info.num_samplers = 2;
 			shader_info.num_uniform_buffers = 1;
-			shader_info.code = test_frag;
-			shader_info.code_size = test_frag_len;
+			shader_info.code = nv12_frag;
+			shader_info.code_size = nv12_frag_len;
+			break;
+
+		case RGB_FRAG:
+			shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+			shader_info.num_samplers = 1;
+			shader_info.num_uniform_buffers = 1;
+			shader_info.code = rgb_frag;
+			shader_info.code_size = rgb_frag_len;
+			break;
+
+		case YUV_FRAG:
+			shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+			shader_info.num_samplers = 3;
+			shader_info.num_uniform_buffers = 1;
+			shader_info.code = yuv_frag;
+			shader_info.code_size = yuv_frag_len;
 			break;
 		}
 
@@ -171,43 +197,6 @@ private:
 		vTexture = nullptr;
 	}
 
-	void create_texture(AVFrame *frame)
-	{
-		if (frame->format == pixel_format && frame->width == width || frame->height == height)
-			return;
-
-		destroy_textures();
-		pixel_format = static_cast<AVPixelFormat>(frame->format);
-		SDL_Log("pixel_format %i\n", pixel_format);
-		width = frame->width;
-		height = frame->height;
-
-		switch (pixel_format)
-		{
-		case AV_PIX_FMT_YUV420P:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			vTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			break;
-
-		case AV_PIX_FMT_YUV420P10LE:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			vTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			break;
-
-		case AV_PIX_FMT_NV12:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8G8_UNORM);
-			break;
-
-		case AV_PIX_FMT_P010LE:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R16G16_UNORM);
-			break;
-		}
-	}
-
 	bool upload_plane(SDL_GPUCopyPass *pass, const uint8_t *data, int linesize, SDL_GPUTexture *texture, Uint32 width, Uint32 height, int bytes_per_pixel)
 	{
 		Uint32 row_size = width * bytes_per_pixel;
@@ -225,14 +214,20 @@ private:
 			return false;
 		}
 
-		// Handle possible padding in linesize
-		uint8_t *dst = (uint8_t *)mapped;
-		const uint8_t *src = data;
-		for (int y = 0; y < height; ++y)
-		{
-			SDL_memcpy(dst, src, row_size);
-			dst += row_size;
-			src += linesize;
+		if (pixel_format == AV_PIX_FMT_RGB24) {
+			uint8_t* dst_data[4] = { static_cast<uint8_t *>(mapped), NULL, NULL, NULL };
+			int dst_linesize[4]  = { static_cast<int>(width) * 4, 0, 0, 0 };
+			sws_scale(sws_ctx, &data, &linesize, 0, height, dst_data, dst_linesize);
+		} else {
+			// Handle possible padding in linesize
+			uint8_t *dst = (uint8_t *)mapped;
+			const uint8_t *src = data;
+			for (int y = 0; y < height; ++y)
+			{
+				SDL_memcpy(dst, src, row_size);
+				dst += row_size;
+				src += linesize;
+			}
 		}
 
 		SDL_UnmapGPUTransferBuffer(device, buf_data->buf);
@@ -256,108 +251,119 @@ private:
 		return true;
 	}
 
-	void push_uniforms(
-		SDL_GPUCommandBuffer *cmd,
-		const AVFrame *frame,
-		float lobes)
+	void push_uniforms(SDL_GPUCommandBuffer *cmd, const AVFrame *frame)
 	{
-		CommonUniforms u = {0};
+		Uniforms u = {0};
 
 		u.tex_size[0] = (float)frame->width;
 		u.tex_size[1] = (float)frame->height;
-		u.lobes = lobes;
-
-		// Bit depth
-		switch (frame->format)
-		{
-		case AV_PIX_FMT_YUV420P10LE:
-		case AV_PIX_FMT_P010LE:
-			u.bit_depth = 10.0f;
-			break;
-		default:
-			u.bit_depth = 8.0f;
-			break;
-		}
-
-		// RGB or YUV
-		u.is_rgb = (frame->format == AV_PIX_FMT_RGBA ||
-					frame->format == AV_PIX_FMT_RGB24 ||
-					frame->format == AV_PIX_FMT_BGRA)
-					   ? 1
-					   : 0;
 
 		// Range (simplified – you can improve this with frame->color_range)
 		u.is_full_range = (frame->color_range == AVCOL_RANGE_JPEG) ? 1 : 0;
 
 		// Color matrix
-		switch (frame->colorspace)
-		{
-		case AVCOL_SPC_BT709:
-			u.matrix_id = 1;
-			break;
-		case AVCOL_SPC_BT2020_NCL:
-		case AVCOL_SPC_BT2020_CL:
-			u.matrix_id = 2;
-			break;
-		default:
-			u.matrix_id = 0; // BT.601
-			break;
-		}
-
-		u.chroma_offset = 0; // or detect from frame->chroma_location
-
-		// Bit depth
-		switch (frame->format)
-		{
-		case AV_PIX_FMT_YUV420P10LE:
-		case AV_PIX_FMT_YUV420P:
-			u.planar = 0;
-			break;
-
-		case AV_PIX_FMT_P010LE:
-		case AV_PIX_FMT_NV12:
-			u.planar = 1;
-			break;
-		}
+		u.matrix_id = frame->colorspace;
 
 		// Push to fragment uniform slot 0
 		SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof(u));
 	}
 
-	bool is_10bit()
+	void create_texture(AVFrame *frame)
 	{
-		return frame->format == AV_PIX_FMT_YUV420P10LE ||
-			   frame->format == AV_PIX_FMT_P010LE;
+		if (frame->format == pixel_format && frame->width == width && frame->height == height)
+			return;
+
+		destroy_textures();
+		pixel_format = static_cast<AVPixelFormat>(frame->format);
+		init_pipeline(pixel_format);
+		SDL_Log("pixel_format %i\n", pixel_format);
+		width = frame->width;
+		height = frame->height;
+
+		switch (pixel_format)
+		{
+		case AV_PIX_FMT_YUV420P:
+		case AV_PIX_FMT_YUVJ420P:
+		case AV_PIX_FMT_YUVJ422P:
+		case AV_PIX_FMT_YUVJ444P:
+			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			vTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			break;
+
+		case AV_PIX_FMT_YUV420P10LE:
+			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+			vTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+			break;
+
+		case AV_PIX_FMT_NV12:
+			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8G8_UNORM);
+			break;
+
+		case AV_PIX_FMT_P010LE:
+			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R16G16_UNORM);
+			break;
+
+		case AV_PIX_FMT_RGBA:
+		case AV_PIX_FMT_RGB24:
+			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
+			break;
+
+		case AV_PIX_FMT_BGRA:
+		case AV_PIX_FMT_BGR24:
+			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
+			break;
+		}
+
+		if (pixel_format == AV_PIX_FMT_RGB24) {
+			setup_sws_context(pixel_format, AV_PIX_FMT_RGBA);
+		}
 	}
 
 	void prepare_texture_draw(SDL_GPUCopyPass *pass) {
 		if (!frame)
 			return;
 		transfer_queue.recycle();
-		int bpp = is_10bit() ? 2 : 1;
+		
+		int bpp = 1;
+		switch (frame->format) {
+			case AV_PIX_FMT_P010LE:
+			case AV_PIX_FMT_YUV420P10LE:
+				bpp = 2;
+				break;
+			case AV_PIX_FMT_RGBA:
+			case AV_PIX_FMT_BGRA:
+			case AV_PIX_FMT_RGB24:
+			case AV_PIX_FMT_BGR24:
+				bpp = 4;
+				break;
+		}
+
 		create_texture(frame);
 
-		switch (pixel_format)
+		switch (n_bindings)
 		{
-		case AV_PIX_FMT_YUV420P:
-		case AV_PIX_FMT_YUV420P10LE:
+		case 3:
 			upload_plane(pass, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
 			upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / 2, height / 2, bpp);
 			upload_plane(pass, frame->data[2], frame->linesize[2], vTexture, width / 2, height / 2, bpp);
-			n_bindings = 3;
 			break;
 
-		case AV_PIX_FMT_NV12:
-		case AV_PIX_FMT_P010LE:
+		case 2:
 			upload_plane(pass, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
 			upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / 2, height / 2, bpp * 2);
-			n_bindings = 2;
 			break;
+
+		default:
+			upload_plane(pass, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
 		}
 	}
 
 	void draw_texture(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *pass) {
-		if (!frame)
+		if (!frame || !pipeline)
 			return;
 
 		SDL_BindGPUGraphicsPipeline(pass, pipeline);
@@ -370,7 +376,7 @@ private:
 		};
 		SDL_BindGPUFragmentSamplers(pass, 0, bindings, n_bindings);
 
-		push_uniforms(cmd, frame, 3.0f);
+		push_uniforms(cmd, frame);
 
 		// Draw fullscreen triangle (3 vertices) or quad
 		SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
@@ -396,14 +402,14 @@ public:
 		if (device)
 			SDL_DestroyGPUDevice(device);
 		device = nullptr;
-		if (frame)
-			av_frame_free(&frame);
+		av_frame_free(&frame);
+		sws_free_context(&sws_ctx);
 	}
 
 	bool init(SDL_Window *window)
 	{
 #ifdef NDEBUG
-		device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, faLse, nullptr);
+		device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, nullptr);
 #else
 		device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, true, nullptr);
 #endif
@@ -437,16 +443,39 @@ public:
 		return sampler;
 	}
 
-	bool init_pipeline(ShaderType type = COMMON_FLAG)
-	{
-		if (pipeline)
-		{
-			SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
-			pipeline = nullptr;
-		}
+	void reset_pipeline() {
+		SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
+		pipeline = nullptr;
+	}
 
+	bool init_pipeline(AVPixelFormat fmt)
+	{
+		reset_pipeline();
+		ShaderType frag;
+		switch (fmt)
+		{
+		case AV_PIX_FMT_YUV420P:
+		case AV_PIX_FMT_YUV420P10LE:
+		case AV_PIX_FMT_YUVJ420P:
+		case AV_PIX_FMT_YUVJ422P:
+		case AV_PIX_FMT_YUVJ444P:
+			n_bindings = 3;
+			frag = YUV_FRAG;
+			break;
+
+		case AV_PIX_FMT_NV12:
+		case AV_PIX_FMT_P010LE:
+			n_bindings = 2;
+			frag = NV12_FRAG;
+			break;
+
+		default:
+			n_bindings = 1;
+			frag = RGB_FRAG;
+			break;
+		}
 		SDL_GPUShader *vs = load_shader(VERT);
-		SDL_GPUShader *fs = load_shader(type);
+		SDL_GPUShader *fs = load_shader(frag);
 
 		SDL_GPUColorTargetDescription color_target = {
 			.format = SDL_GetGPUSwapchainTextureFormat(device, window)

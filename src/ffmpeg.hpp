@@ -531,10 +531,6 @@ public:
         printf("%i: %s\n", err, err_buf);
     }
 
-    AVCodecContext *get_subtitle_ctx() {
-        return subtitle_codec_ctx;
-    }
-
     void select_subtitle(int idx) {
         if (subtitle_stream_idx != idx) {
             avcodec_free_context(&subtitle_codec_ctx);
@@ -594,6 +590,8 @@ public:
     auto get_audio_tracks() const { return audio_list; }
     auto get_subtitle_index() const { return subtitle_stream_idx; }
     auto get_audio_index() const { return audio_stream_index; }
+    auto get_subtitle_ctx() { return subtitle_codec_ctx; }
+    auto get_video_ctx() { return video_codec_ctx; }
 #ifdef _VIDEO_CONVERTER_THREAD_
     PacketQueue video_packet_queue;
 #endif
