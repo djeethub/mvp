@@ -35,6 +35,7 @@ uint32_t SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, uint32_t int
 }
 
 AppGui gui;
+AssHandler ass;
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     if (argc < 2 || !argv[1]) return SDL_APP_FAILURE;
@@ -107,14 +108,14 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     SDL_UpdateTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0]);
                     break;
             }*/
-            state->gpu.set_frame(video_frame);
+            state->gpu.set_frame(video_frame, state->get_play_time());
 //            state->gpu.render();
         }
         return SDL_APP_CONTINUE;
     } else if (event->type == USEREVENT_SUBTITLE_ASS) {
         Subtitle *subtitle;
         while (state->sub_queue.dequeue(subtitle)) {
-            state->ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
+            ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
 //                printf("subtitle: %s, %f, %f\n", subtitle->text.c_str(), subtitle->pts, subtitle->duration);
             state->sub_queue.recycle(subtitle);
         }
@@ -264,7 +265,6 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 SDL_AppResult SDL_AppIterate(void *appstate) {
     auto *state = static_cast<AppState*>(appstate);
 
-//    state->draw_ass();
     auto app_result = gui.draw();
     if (app_result != SDL_APP_CONTINUE)
         return app_result;
@@ -277,6 +277,7 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     if (state) {
         state->shutdown();
         gui.shutdown();
+        ass.shutdown();
 //        SDL_WaitForGPUIdle(state->gpu.get_device());
         delete state;
     }

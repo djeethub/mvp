@@ -30,6 +30,8 @@ set(SHADER_SOURCES
     shaders/test.frag
     shaders/vert.vert
     shaders/common.frag
+    shaders/ass.vert
+    shaders/ass.frag
 )
 
 set(SPIRV_HEADER_FILES "")

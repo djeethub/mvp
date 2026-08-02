@@ -31,13 +31,9 @@ Uint32 USEREVENT_NEXT_FRAME;
 Uint32 USEREVENT_SUBTITLE_ASS;
 #define NUM_USEREVENT   2
 
-enum MediaMode {
-    None = 0,
-    Video,
-    Image
-};
-
 namespace fs = std::filesystem;
+
+extern AssHandler ass;
 
 using WindowPtr = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
 using RendererPtr = std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)>;
@@ -45,6 +41,12 @@ using TexturePtr = std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)>;
 using AudioStream = std::unique_ptr<SDL_AudioStream, decltype(&SDL_DestroyAudioStream)>;
 
 uint32_t SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, uint32_t interval);
+
+enum MediaMode {
+    None = 0,
+    Video,
+    Image
+};
 
 struct Subtitle {
     std::string text;
@@ -91,7 +93,6 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
     VideoConverter video_converter;
 #endif
-    AssHandler ass;
     std::future<DirData *> dir_future;
     static inline const std::unordered_set<std::string> video_exts = { ".mp4", ".mkv", ".mov", ".flv", ".wmv", ".webm" };
     static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif" };
@@ -298,20 +299,22 @@ struct AppState {
 
         if (video.find_subtitle_stream()) {
             if (video.open_subtitle_decoder()) {
-
             }
         }
 
         chapter_list = video.read_chapters();
 
         resize_window();
-        int target_w, target_h;
-        video.get_video_dimensions(target_w, target_h);
         SDL_SetWindowTitle(window.get(), file_path.c_str());
-        auto subtitle_ctx = video.get_subtitle_ctx();
-        if (subtitle_ctx)
-            ass.init(target_w, target_h, subtitle_ctx);
+        
         gpu.init_pipeline(COMMON_FLAG); // todo: format check
+        auto subtitle_ctx = video.get_subtitle_ctx();
+        if (subtitle_ctx) {
+            int target_w, target_h;
+            video.get_video_dimensions(target_w, target_h);
+            ass.init(gpu.get_device(), gpu.get_sampler());
+            ass.init(target_w, target_h, subtitle_ctx, window.get());
+        }
 
 #ifdef _VIDEO_CONVERTER_THREAD_
         video_converter.start();
@@ -733,10 +736,6 @@ struct AppState {
             seek_time = get_play_time();
             is_paused = true;
         }
-    }
-
-    void draw_ass() {
-        ass.draw(renderer.get(), get_play_time());
     }
 
     auto get_file_name() {

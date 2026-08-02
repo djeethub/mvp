@@ -61,10 +61,6 @@ namespace
 class AppGui {
     public:
         AppGui() = default;
-        ~AppGui()
-        {
-            shutdown();
-        }
 
         void shutdown() {
             if (state) {
