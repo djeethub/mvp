@@ -4,8 +4,8 @@ vec3 to_rgb(float y, float u, float v, int colorRange, int colorspace) {
     // AVCOL_RANGE_MPEG = 1 (Limited/Broadcast Range [16, 235])
     if (colorRange == 1) { 
         y = (y - (16.0 / 255.0)) * (255.0 / 219.0);
-        u = u - (128.0 / 255.0);
-        v = v - (128.0 / 255.0);
+        u = (u - (128.0 / 255.0)) * (255.0 / 224.0);
+        v = (v - (128.0 / 255.0)) * (255.0 / 224.0);
     } else {
         // Full range still requires shifting Chroma components to center zero
         u = u - (128.0 / 255.0);

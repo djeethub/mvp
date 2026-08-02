@@ -259,9 +259,9 @@ private:
 		u.tex_size[1] = (float)frame->height;
 
 		// Range (simplified – you can improve this with frame->color_range)
-		u.color_range = frame->color_range;
+		u.color_range = frame->color_range == AVCOL_RANGE_UNSPECIFIED ? AVCOL_RANGE_MPEG : frame->color_range;
 		// Color matrix
-		u.colorspace = frame->colorspace;
+		u.colorspace = frame->colorspace == AVCOL_SPC_UNSPECIFIED ? AVCOL_SPC_BT709 : frame->colorspace;
 
 		// Push to fragment uniform slot 0
 		SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof(u));
