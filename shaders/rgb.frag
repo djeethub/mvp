@@ -6,8 +6,8 @@ layout(set = 2, binding = 0) uniform sampler2D u_tex_y;
 // Uniforms
 layout(set = 3, binding = 0) uniform Uniforms {
     vec2  tex_size;        // full resolution (Y plane)
-    int   is_full_range;   // 1 = full range, 0 = limited
-    int   matrix_id;       // 0 = BT.601, 1 = BT.709, 2 = BT.2020
+    int   color_range;   // 2 = jpeg, 1 = mpeg
+    int   colorspace;    // 2 = BT.601, 1 = BT.709, 9,10 = BT.2020
 } uf;
 
 layout(location = 0) in vec2 v_uv;

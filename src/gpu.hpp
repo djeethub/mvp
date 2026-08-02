@@ -22,8 +22,8 @@ enum ShaderType
 struct Uniforms
 {
 	float tex_size[2]; // width, height of Y plane
-	int is_full_range; // 1 = full range, 0 = limited
-	int matrix_id;	   // 0 = BT.601, 1 = BT.709, 2 = BT.2020
+	int color_range; // 1 = full range, 0 = limited
+	int colorspace;	 // 1 = 709, 9,10 = 2090
 };
 
 class GPUTransferQueue {
@@ -259,10 +259,9 @@ private:
 		u.tex_size[1] = (float)frame->height;
 
 		// Range (simplified – you can improve this with frame->color_range)
-		u.is_full_range = (frame->color_range == AVCOL_RANGE_JPEG) ? 1 : 0;
-
+		u.color_range = frame->color_range;
 		// Color matrix
-		u.matrix_id = frame->colorspace;
+		u.colorspace = frame->colorspace;
 
 		// Push to fragment uniform slot 0
 		SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof(u));

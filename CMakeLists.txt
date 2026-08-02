@@ -37,6 +37,12 @@ set(SHADER_SOURCES
     shaders/yuv.frag
 )
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(GLSLC_FLAGS "-g")
+else()
+    set(GLSLC_FLAGS "-O")
+endif()
+
 set(SPIRV_HEADER_FILES "")
 
 foreach(SHADER_SRC ${SHADER_SOURCES})
