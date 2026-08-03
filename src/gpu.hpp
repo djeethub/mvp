@@ -8,6 +8,7 @@
 #include "nv12.frag.h"
 #include "rgb.frag.h"
 #include "yuv.frag.h"
+#include "gray.frag.h"
 
 extern AssHandler ass;
 
@@ -16,7 +17,8 @@ enum ShaderType
 	VERT,
 	RGB_FRAG,
 	NV12_FRAG,
-	YUV_FRAG
+	YUV_FRAG,
+	GRAY_FRAG
 };
 
 struct alignas(16) Uniforms
@@ -160,6 +162,14 @@ private:
 			shader_info.num_uniform_buffers = 1;
 			shader_info.code = yuv_frag;
 			shader_info.code_size = yuv_frag_len;
+			break;
+
+		case GRAY_FRAG:
+			shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+			shader_info.num_samplers = 1;
+			shader_info.num_uniform_buffers = 1;
+			shader_info.code = gray_frag;
+			shader_info.code_size = gray_frag_len;
 			break;
 		}
 
@@ -308,14 +318,19 @@ private:
 			uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16G16_UNORM);
 			break;
 
-		case AV_PIX_FMT_RGBA:
-		case AV_PIX_FMT_RGB24:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
-			break;
-
 		case AV_PIX_FMT_BGRA:
 		case AV_PIX_FMT_BGR24:
 			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
+			break;
+
+		case AV_PIX_FMT_GRAY8:
+			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			break;
+
+		case AV_PIX_FMT_RGBA:
+		case AV_PIX_FMT_RGB24:
+		default:
+			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
 			break;
 		}
 
@@ -483,6 +498,11 @@ public:
 		case AV_PIX_FMT_P010LE:
 			n_bindings = 2;
 			frag = NV12_FRAG;
+			break;
+
+		case AV_PIX_FMT_GRAY8:
+			n_bindings = 1;
+			frag = GRAY_FRAG;
 			break;
 
 		default:
