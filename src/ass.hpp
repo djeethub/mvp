@@ -9,11 +9,17 @@
 
 #define N_EXTRA_SIZE 32
 
+struct alignas(16) TransformData {
+    float position[2]; // x, y (in NDC: -1.0 to 1.0)
+    float size[2];     // width, height (in NDC: 0.0 to 2.0)
+    float uv[2];
+    float padding[2];
+};
+
 struct CopyData {
     SDL_GPUTexture *glyph_tex;
-    SDL_GPUBuffer* vert_buf;
-    SDL_GPUTransferBuffer* v_xfer;
     uint32_t color;
+    TransformData transform;
 };
 
 struct XferBuf {
@@ -25,11 +31,6 @@ struct TexBuf {
     SDL_GPUTexture *buf;
     Uint32 w;
     Uint32 h;
-};
-
-struct BufBuf {
-    SDL_GPUBuffer *buf;
-    Uint32 size;
 };
 
 template <typename T>
@@ -145,73 +146,45 @@ public:
     }
 };
 
-class BufPool : public GPUPool<BufBuf> {
+class CopyDataPool {
 protected:
-    void destroy(BufBuf *buf) {
-        SDL_ReleaseGPUBuffer(device, buf->buf);
-        delete buf;
-    }
-
-    int n_extra = 0;
-
-public:
-    void clear() {
-        recycle();
-        while (!queue.empty()) {
-            destroy(queue.front());
-            queue.pop();
-        }
-    }
-
-    BufBuf *alloc(Uint32 size) {
-        while (!queue.empty()) {
-            auto d = queue.front();
-            queue.pop();
-            if (d->size >= size)
-                return d;
-            else
-                destroy(d);
-        }
-
-        SDL_GPUBufferCreateInfo vb_info = {
-            .usage = SDL_GPU_BUFFERUSAGE_VERTEX,
-            .size = size
-        };
-        auto buf = SDL_CreateGPUBuffer(device, &vb_info);
-        if (!buf)
-            return nullptr;
-		auto data = new BufBuf{.buf = buf, .size = vb_info.size};
-		return data;
-    }
-};
-
-class CopyDataQueue {
-protected:
-    SDL_GPUDevice *device;
-public:
+    std::vector<CopyData *> in_use_list;
     std::vector<CopyData *> list;
 
-    void init(SDL_GPUDevice *device) {
-        this->device = device;
+public:
+    auto get_in_use() {
+        return in_use_list;
+    }
+
+    void recycle(CopyData *buf) {
+        list.push_back(buf);
+    }
+
+    void in_use(CopyData *buf) {
+        in_use_list.push_back(buf);
+    }
+
+    void recycle() {
+        list.insert(list.end(), in_use_list.begin(), in_use_list.end());
+        in_use_list.clear();
     }
 
     void clear() {
+        recycle();
         for (auto data : list) {
-            destroy(data);
+            delete data;
         }
         list.clear();
     }
 
-    void destroy(CopyData *data) {
-        delete data;
-    }
+    CopyData *alloc() {
+        if (!list.empty()) {
+            auto data = list.back();
+            list.pop_back();
+            return data;
+        }
 
-    bool empty() {
-        return list.empty();
-    }
-
-    void push(CopyData *data) {
-        list.push_back(data);
+        return new CopyData;
     }
 };
 
@@ -224,9 +197,7 @@ public:
         }
         xfer_pool.clear();
         tex_pool.clear();
-        copy_queue.clear();
-        vert_pool.clear();
-        v_xfer_pool.clear();
+        copy_pool.clear();
     }
 
     void init(SDL_GPUDevice *device, SDL_GPUSampler *sampler) {
@@ -234,9 +205,6 @@ public:
         this->sampler = sampler;
         xfer_pool.init(device);
         tex_pool.init(device);
-        copy_queue.init(device);
-        vert_pool.init(device);
-        v_xfer_pool.init(device);
     }
 
     bool init(int width, int height, AVCodecContext *subtitle_codec_ctx, SDL_Window *window) {
@@ -295,9 +263,7 @@ public:
 
         xfer_pool.recycle();
         tex_pool.recycle();
-        vert_pool.recycle();
-        v_xfer_pool.recycle();
-        copy_queue.clear();
+        copy_pool.recycle();
 
         int changed = 0;
         // Ask libass to process the track at this specific millisecond frame marker
@@ -328,61 +294,40 @@ public:
             };
             SDL_UploadToGPUTexture(pass, &transfer_info, &region, false);
 
-            CopyData *data = new CopyData{
-                .glyph_tex = glyph->buf
-            };
-
             // --- B. Convert Screen Coordinates to Normalized Device Coordinates (NDC) ---
             // libass gives pixel coordinates top-left (0,0) to bottom-right (screen_w, screen_h)
             float x0 = (2.0f * img->dst_x / wnd_w) - 1.0f;
             float y0 = 1.0f - (2.0f * img->dst_y / wnd_h);
-            float x1 = (2.0f * (img->dst_x + img->w) / wnd_w) - 1.0f;
-            float y1 = 1.0f - (2.0f * (img->dst_y + img->h) / wnd_h);
-
+            float w1 = 2.0f * img->w / wnd_w;
+            float h1 = 2.0f * img->h / wnd_h;
             float max_u = (float)img->w / (float)glyph->w;
             float max_v = (float)img->h / (float)glyph->h;
 
-            Vertex vertices[4] = {
-                { x0, y0, 0.0f, 0.0f }, // Top-Left
-                { x1, y0, max_u, 0.0f }, // Top-Right
-                { x0, y1, 0.0f, max_v }, // Bottom-Left
-                { x1, y1, max_u, max_v }  // Bottom-Right
+            CopyData *data = copy_pool.alloc();
+            *data = {
+                .glyph_tex = glyph->buf,
+                .color = img->color,
+                .transform = {
+                    .position = { x0, y0 },
+                    .size = { w1, h1 },
+                    .uv = { max_u, max_v }
+                }
             };
-
-            // Create dynamic Vertex Buffer for this quad
-            auto vert = vert_pool.alloc(sizeof(vertices));
-
-            // Write vertices directly using Transfer Buffer or SDL_UploadToGPUBuffer
-            // (For brevity, uploading vertex quad to GPU)
-            auto v_xfer = v_xfer_pool.alloc(sizeof(vertices));
-            
-            void* v_map = SDL_MapGPUTransferBuffer(device, v_xfer->buf, false);
-            SDL_memcpy(v_map, vertices, sizeof(vertices));
-            SDL_UnmapGPUTransferBuffer(device, v_xfer->buf);
-
-            SDL_GPUTransferBufferLocation v_transfer = { v_xfer->buf, 0 };
-            SDL_GPUBufferRegion v_region = { vert->buf, 0, sizeof(vertices) };
-            
-            SDL_UploadToGPUBuffer(pass, &v_transfer, &v_region, false);
 
             xfer_pool.in_use(xfer);
             tex_pool.in_use(glyph);
-            vert_pool.in_use(vert);
-            v_xfer_pool.in_use(v_xfer);            
-            data->vert_buf = vert->buf;
-            data->v_xfer = v_xfer->buf;
-            data->color = img->color;
-            copy_queue.push(data);
+            copy_pool.in_use(data);
         }
     }
 
     void draw(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *pass) {
-        if (copy_queue.empty())
+        auto list = copy_pool.get_in_use();
+        if (list.empty())
             return;
 
         SDL_BindGPUGraphicsPipeline(pass, pipeline);   // the one with blending enabled            
 
-        for (auto data : copy_queue.list) {
+        for (auto data : list) {
             uint32_t c = data->color;
             float r = ((c >> 24) & 0xFF) / 255.0f;
             float g = ((c >> 16) & 0xFF) / 255.0f;
@@ -392,14 +337,10 @@ public:
             float color_uniform[4] = { r, g, b, a };
 
             // --- D. Bind & Render Quad ---
-            SDL_GPUBufferBinding v_binding = { data->vert_buf, 0 };
-            SDL_BindGPUVertexBuffers(pass, 0, &v_binding, 1);
-
             SDL_GPUTextureSamplerBinding t_binding = { data->glyph_tex, sampler };
             SDL_BindGPUFragmentSamplers(pass, 0, &t_binding, 1);
-
+            SDL_PushGPUVertexUniformData(cmd, 0, &data->transform, sizeof(data->transform));
             SDL_PushGPUFragmentUniformData(cmd, 0, color_uniform, sizeof(color_uniform));
-
             SDL_DrawGPUPrimitives(pass, 4, 1, 0, 0);
         }
     }
@@ -420,6 +361,7 @@ private:
 			.entrypoint = "main",
 			.format = SDL_GPU_SHADERFORMAT_SPIRV,
             .stage = SDL_GPU_SHADERSTAGE_VERTEX,
+            .num_uniform_buffers = 1
 		};
         SDL_GPUShader *vert_shader = SDL_CreateGPUShader(device, &shader_info);
         shader_info.code_size = ass_frag_len,
@@ -434,25 +376,6 @@ private:
             .fragment_shader = frag_shader,
             .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP
         };
-
-        // 1. Vertex Layout Setup (Pos: float2, UV: float2)
-        SDL_GPUVertexAttribute attrs[2] = {};
-        attrs[0].location = 0;
-        attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-        attrs[0].offset = 0;
-
-        attrs[1].location = 1;
-        attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-        attrs[1].offset = sizeof(float) * 2;
-
-        SDL_GPUVertexBufferDescription buffer_desc = {};
-        buffer_desc.slot = 0;
-        buffer_desc.pitch = sizeof(float) * 4;
-
-        pipeline_info.vertex_input_state.vertex_attributes = attrs;
-        pipeline_info.vertex_input_state.num_vertex_attributes = 2;
-        pipeline_info.vertex_input_state.vertex_buffer_descriptions = &buffer_desc;
-        pipeline_info.vertex_input_state.num_vertex_buffers = 1;
 
         // 2. Enable Standard Alpha Blending
         SDL_GPUColorTargetDescription color_desc = {};
@@ -481,12 +404,10 @@ private:
     SDL_GPUGraphicsPipeline *pipeline = nullptr;
     XferPool xfer_pool{N_EXTRA_SIZE * N_EXTRA_SIZE};
     TexPool tex_pool;
-    BufPool vert_pool;
-    XferPool v_xfer_pool;
     SDL_GPUDevice *device = nullptr;
     SDL_GPUTexture *glyph_tex = nullptr;
     int wnd_w = 0;
     int wnd_h = 0;
-    CopyDataQueue copy_queue;
+    CopyDataPool copy_pool;
     SDL_GPUSampler *sampler = nullptr;
 };

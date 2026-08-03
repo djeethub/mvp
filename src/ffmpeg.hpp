@@ -16,12 +16,9 @@ extern "C" {
 #include <libavutil/dict.h>
 }
 
-#include "videoscaler.hpp"
 #include "concurrentqueue.h"
 
 namespace ff {
-
-AVPixelFormat finalPixelFormat = AV_PIX_FMT_NV12;
 
 struct ChapterData {
     std::string title;
@@ -293,7 +290,6 @@ public:
         avcodec_parameters_to_context(video_codec_ctx, codec_params);
         avcodec_open2(video_codec_ctx, codec, nullptr);
         video_time_base = av_q2d(format_ctx->streams[video_stream_index]->time_base);
-        finalPixelFormat = VideoScaler::av_sup_fmt(video_codec_ctx->pix_fmt);
 //        printf("av format: %i -> %i\n", video_codec_ctx->pix_fmt, finalPixelFormat);
         return true;
     }
@@ -416,18 +412,12 @@ public:
             audio_buf->data_size = 0;
     }
 
-    AVFrame *scale_video_frame(AVFrame *frame, int width, int height)
-    {
-        return video_scaler.scale(frame, width, height);
-    }
-
     void close() {
         avcodec_free_context(&audio_codec_ctx);
         avcodec_free_context(&video_codec_ctx);
         avcodec_free_context(&subtitle_codec_ctx);
         avformat_close_input(&format_ctx);
         swr_free(&swr_ctx);
-        video_scaler.clear();
         audio_stream_index = -1;
         video_stream_index = -1;
         subtitle_stream_idx = -1;
@@ -575,7 +565,6 @@ private:
     double video_time_base = 0.0;
     double audio_time_base = 0.0;
     double subtitle_time_base = 0.0;
-    VideoScaler video_scaler;
 
 public:
     auto get_duration() const { return duration; }

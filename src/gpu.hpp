@@ -19,11 +19,11 @@ enum ShaderType
 	YUV_FRAG
 };
 
-struct Uniforms
+struct alignas(16) Uniforms
 {
 	float tex_size[2]; // width, height of Y plane
-	int color_range; // 1 = full range, 0 = limited
-	int colorspace;	 // 1 = 709, 9,10 = 2090
+	int32_t color_range; // 1 = full range, 0 = limited
+	int32_t colorspace;	 // 1 = 709, 9,10 = 2090
 };
 
 class XferQueue {

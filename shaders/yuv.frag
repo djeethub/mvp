@@ -8,7 +8,7 @@ layout(set = 2, binding = 1) uniform sampler2D u_tex_u;
 layout(set = 2, binding = 2) uniform sampler2D u_tex_v;
 
 // Uniforms
-layout(set = 3, binding = 0) uniform Uniforms {
+layout(std140, set = 3, binding = 0) uniform Uniforms {
     vec2  tex_size;        // full resolution (Y plane)
     int   color_range;   // 2 = jpeg, 1 = mpeg
     int   colorspace;    // 2 = BT.601, 1 = BT.709, 9,10 = BT.2020

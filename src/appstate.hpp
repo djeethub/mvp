@@ -368,6 +368,21 @@ struct AppState {
         sub_queue.enqueue(std::move(data));
     }
 
+    AVFrame *use_frame(AVFrame *frame) {
+        auto new_frame = ff::frame_alloc();
+        if (frame->format == AV_PIX_FMT_VAAPI) {
+            auto err = av_hwframe_transfer_data(new_frame, frame, 0);
+            if (err != 0) SDL_Log("av_hwframe_transfer_data failed: %s\n", av_err2str(err));
+            new_frame->pts = frame->pts;
+            new_frame->duration = frame->duration;
+            return new_frame;
+        }
+        else {
+            av_frame_move_ref(new_frame, frame);
+        }
+        return new_frame;
+    }    
+
     int read_next_frame(double play_time) {
         int read_result = 0;
         while (true) {
@@ -411,8 +426,7 @@ struct AppState {
                     if (frame->pts * video.get_video_time_base() < play_time) {
                         return;
                     }
-                    AVFrame *new_frame = video.scale_video_frame(frame, frame->width, frame->height);
-                    video.video_frame_queue.push(new_frame);
+                    video.video_frame_queue.push(use_frame(frame));
                 });
 #endif
             }, [&](AVSubtitle& subtitle, AVPacket *packet) {
@@ -755,21 +769,6 @@ struct AppState {
 //            if (audio_stream)
 //                SDL_FlushAudioStream(audio_stream.get());
             video.select_audio(idx);
-        }
-    }
-
-    void create_texture(AVFrame *frame) {
-        if (!texture || texture->w != frame->width || texture->h != frame->height) {
-            auto sdl_format = ff::VideoScaler::av_to_sdl(static_cast<AVPixelFormat>(frame->format));
-            printf("texture format: %x\n", sdl_format);
-            SDL_Texture* tex = SDL_CreateTexture(
-                renderer.get(),
-                sdl_format,
-                SDL_TEXTUREACCESS_STREAMING, 
-                frame->width,
-                frame->height
-            );
-            texture.reset(tex);
         }
     }
 };
