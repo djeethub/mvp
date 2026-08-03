@@ -72,7 +72,7 @@ struct AppState {
     AudioStream audio_stream{nullptr, SDL_DestroyAudioStream};
 
     ff::VideoFile video;
-    GPUPipeline gpu;
+    AppGpu gpu;
     std::atomic<AVFrame *> video_frame;
     TwowayQueue<Subtitle *> sub_queue;
     ff::AudioBuffer audio_buf;

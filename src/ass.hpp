@@ -27,6 +27,11 @@ struct TexBuf {
     Uint32 h;
 };
 
+struct BufBuf {
+    SDL_GPUBuffer *buf;
+    Uint32 size;
+};
+
 template <typename T>
 class GPUPool {
 protected:
@@ -62,7 +67,11 @@ protected:
         delete buf;
     }
 
+    int n_extra = 0;
+
 public:
+    XferPool(int extra = 0) : n_extra(extra) {}
+
     void clear() {
         recycle();
         while (!queue.empty()) {
@@ -83,7 +92,7 @@ public:
 
 		SDL_GPUTransferBufferCreateInfo tb_info = {
 			.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-			.size = size + N_EXTRA_SIZE * N_EXTRA_SIZE,
+			.size = size + n_extra,
 		};
 		auto buf = SDL_CreateGPUTransferBuffer(device, &tb_info);
         if (!buf)
@@ -136,6 +145,46 @@ public:
     }
 };
 
+class BufPool : public GPUPool<BufBuf> {
+protected:
+    void destroy(BufBuf *buf) {
+        SDL_ReleaseGPUBuffer(device, buf->buf);
+        delete buf;
+    }
+
+    int n_extra = 0;
+
+public:
+    void clear() {
+        recycle();
+        while (!queue.empty()) {
+            destroy(queue.front());
+            queue.pop();
+        }
+    }
+
+    BufBuf *alloc(Uint32 size) {
+        while (!queue.empty()) {
+            auto d = queue.front();
+            queue.pop();
+            if (d->size >= size)
+                return d;
+            else
+                destroy(d);
+        }
+
+        SDL_GPUBufferCreateInfo vb_info = {
+            .usage = SDL_GPU_BUFFERUSAGE_VERTEX,
+            .size = size
+        };
+        auto buf = SDL_CreateGPUBuffer(device, &vb_info);
+        if (!buf)
+            return nullptr;
+		auto data = new BufBuf{.buf = buf, .size = vb_info.size};
+		return data;
+    }
+};
+
 class CopyDataQueue {
 protected:
     SDL_GPUDevice *device;
@@ -154,8 +203,6 @@ public:
     }
 
     void destroy(CopyData *data) {
-        SDL_ReleaseGPUBuffer(device, data->vert_buf);
-        SDL_ReleaseGPUTransferBuffer(device, data->v_xfer);
         delete data;
     }
 
@@ -178,6 +225,8 @@ public:
         xfer_pool.clear();
         tex_pool.clear();
         copy_queue.clear();
+        vert_pool.clear();
+        v_xfer_pool.clear();
     }
 
     void init(SDL_GPUDevice *device, SDL_GPUSampler *sampler) {
@@ -186,6 +235,8 @@ public:
         xfer_pool.init(device);
         tex_pool.init(device);
         copy_queue.init(device);
+        vert_pool.init(device);
+        v_xfer_pool.init(device);
     }
 
     bool init(int width, int height, AVCodecContext *subtitle_codec_ctx, SDL_Window *window) {
@@ -244,6 +295,8 @@ public:
 
         xfer_pool.recycle();
         tex_pool.recycle();
+        vert_pool.recycle();
+        v_xfer_pool.recycle();
         copy_queue.clear();
 
         int changed = 0;
@@ -297,31 +350,27 @@ public:
             };
 
             // Create dynamic Vertex Buffer for this quad
-            SDL_GPUBufferCreateInfo vb_info = {
-                .usage = SDL_GPU_BUFFERUSAGE_VERTEX,
-                .size = sizeof(vertices)
-            };
-            data->vert_buf = SDL_CreateGPUBuffer(device, &vb_info);
+            auto vert = vert_pool.alloc(sizeof(vertices));
 
             // Write vertices directly using Transfer Buffer or SDL_UploadToGPUBuffer
             // (For brevity, uploading vertex quad to GPU)
-            SDL_GPUTransferBufferCreateInfo v_tb_info = {
-                .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-                .size = sizeof(vertices)
-            };
-            data->v_xfer = SDL_CreateGPUTransferBuffer(device, &v_tb_info);
+            auto v_xfer = v_xfer_pool.alloc(sizeof(vertices));
             
-            void* v_map = SDL_MapGPUTransferBuffer(device, data->v_xfer, false);
+            void* v_map = SDL_MapGPUTransferBuffer(device, v_xfer->buf, false);
             SDL_memcpy(v_map, vertices, sizeof(vertices));
-            SDL_UnmapGPUTransferBuffer(device, data->v_xfer);
+            SDL_UnmapGPUTransferBuffer(device, v_xfer->buf);
 
-            SDL_GPUTransferBufferLocation v_transfer = { data->v_xfer, 0 };
-            SDL_GPUBufferRegion v_region = { data->vert_buf, 0, sizeof(vertices) };
+            SDL_GPUTransferBufferLocation v_transfer = { v_xfer->buf, 0 };
+            SDL_GPUBufferRegion v_region = { vert->buf, 0, sizeof(vertices) };
             
             SDL_UploadToGPUBuffer(pass, &v_transfer, &v_region, false);
 
             xfer_pool.in_use(xfer);
             tex_pool.in_use(glyph);
+            vert_pool.in_use(vert);
+            v_xfer_pool.in_use(v_xfer);            
+            data->vert_buf = vert->buf;
+            data->v_xfer = v_xfer->buf;
             data->color = img->color;
             copy_queue.push(data);
         }
@@ -430,8 +479,10 @@ private:
     std::unique_ptr<ASS_Renderer, decltype(&ass_renderer_done)> ass_renderer{nullptr, ass_renderer_done};
     std::unique_ptr<ASS_Track, decltype(&ass_free_track)> ass_track{nullptr, ass_free_track};
     SDL_GPUGraphicsPipeline *pipeline = nullptr;
-    XferPool xfer_pool;
+    XferPool xfer_pool{N_EXTRA_SIZE * N_EXTRA_SIZE};
     TexPool tex_pool;
+    BufPool vert_pool;
+    XferPool v_xfer_pool;
     SDL_GPUDevice *device = nullptr;
     SDL_GPUTexture *glyph_tex = nullptr;
     int wnd_w = 0;

@@ -26,9 +26,9 @@ struct Uniforms
 	int colorspace;	 // 1 = 709, 9,10 = 2090
 };
 
-class GPUTransferQueue {
+class XferQueue {
 public:
-	~GPUTransferQueue() {
+	~XferQueue() {
 		clear();
 	}
 
@@ -92,7 +92,7 @@ private:
 	SDL_GPUDevice *device;
 };
 
-class GPUPipeline
+class AppGpu
 {
 private:
 	SDL_GPUDevice *device = nullptr;
@@ -107,7 +107,7 @@ private:
 	int height = 0;
 	AVFrame *frame = nullptr;
 	int n_bindings = 0;
-	GPUTransferQueue transfer_queue;
+	XferQueue transfer_queue;
 	SwsContext *sws_ctx = nullptr;
 
 	bool setup_sws_context(AVPixelFormat src_fmt, AVPixelFormat dst_fmt) {
@@ -382,7 +382,7 @@ private:
 	}
 
 public:
-	~GPUPipeline()
+	~AppGpu()
 	{
 		shutdown();
 	}

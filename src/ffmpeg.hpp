@@ -82,7 +82,7 @@ public:
     }
 };
 
-template <typename T>
+template <typename T, typename Deleter>
 class AvQueue {
 protected:
     std::queue<T> queue;
@@ -95,7 +95,7 @@ public:
     void clear() {
         while (!queue.empty())
         {
-            destroy(queue.front());
+            Deleter{}(queue.front());
             queue.pop();
         }
     }
@@ -127,15 +127,13 @@ public:
     auto empty() {
         return queue.empty();
     }
-
-    virtual void destroy(T pptr) = 0;
 };
 
-class FrameQueue : public AvQueue<AVFrame *> {
-    void destroy(AVFrame *pptr) {
-        av_frame_free(&pptr);
-    }
+struct FrameDeleter {
+    void operator()(AVFrame *frame) { av_frame_free(&frame); }
 };
+
+using FrameQueue = AvQueue<AVFrame *, FrameDeleter>;
 
 FramePool frame_pool;
 
