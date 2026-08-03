@@ -79,9 +79,6 @@ struct AppState {
     double tick_diff = 0;
     SDL_AudioDeviceID audio_device_id = 0;
     std::thread fetch_thread;
-    float video_scale = 1.0;
-    float video_pan_x = 0.0;
-    float video_pan_y = 0.0;
     bool is_loop = true;
     bool is_seeking = true;
     double seek_time;

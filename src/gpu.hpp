@@ -21,6 +21,11 @@ enum ShaderType
 	GRAY_FRAG
 };
 
+struct alignas(16) Vertform {
+    float position[2]; // x, y (in NDC: -1.0 to 1.0)
+    float size[2];     // width, height (in NDC: 0.0 to 2.0)
+};
+
 struct alignas(16) Uniforms
 {
 	float tex_size[2]; // width, height of Y plane
@@ -136,6 +141,7 @@ private:
 		{
 		case VERT:
 			shader_info.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+			shader_info.num_uniform_buffers = 1;
 			shader_info.code = vert_vert;
 			shader_info.code_size = vert_vert_len;
 			break;
@@ -265,16 +271,24 @@ private:
 
 	void push_uniforms(SDL_GPUCommandBuffer *cmd, const AVFrame *frame)
 	{
-		Uniforms u = {0};
+		int wnd_w, wnd_h;
+		SDL_GetWindowSizeInPixels(window, &wnd_w, &wnd_h);
+		auto scale = SDL_max((float) wnd_w / frame->width, (float) wnd_h / frame->height) * video_scale;
+		float w = 2.0f * scale * frame->width / wnd_w;
+		float h = 2.0f * scale * frame->height / wnd_h;
+		Vertform tf = {
+			.position = { video_pan_x / wnd_w, video_pan_y / wnd_h },
+			.size = { w, h }
+		};
+		SDL_PushGPUVertexUniformData(cmd, 0, &tf, sizeof(tf));
 
+		Uniforms u = {0};
 		u.tex_size[0] = (float)frame->width;
 		u.tex_size[1] = (float)frame->height;
-
 		// Range (simplified – you can improve this with frame->color_range)
 		u.color_range = frame->color_range == AVCOL_RANGE_UNSPECIFIED ? AVCOL_RANGE_MPEG : frame->color_range;
 		// Color matrix
 		u.colorspace = frame->colorspace == AVCOL_SPC_UNSPECIFIED ? AVCOL_SPC_BT709 : frame->colorspace;
-
 		// Push to fragment uniform slot 0
 		SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof(u));
 	}
@@ -396,11 +410,14 @@ private:
 
 		push_uniforms(cmd, frame);
 
-		// Draw fullscreen triangle (3 vertices) or quad
-		SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+		SDL_DrawGPUPrimitives(pass, 4, 1, 0, 0);
 	}
 
 public:
+    float video_scale = 1.0;
+    float video_pan_x = 0.0;
+    float video_pan_y = 0.0;
+
 	~AppGpu()
 	{
 		shutdown();
@@ -519,7 +536,7 @@ public:
 		SDL_GPUGraphicsPipelineCreateInfo pipe_info = {
 			.vertex_shader = vs,
 			.fragment_shader = fs,
-			.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+			.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP,
 			.target_info = {
 				.color_target_descriptions = &color_target,
 				.num_color_targets = 1,
