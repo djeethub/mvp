@@ -105,6 +105,8 @@ private:
 	AVPixelFormat pixel_format = AV_PIX_FMT_NONE;
 	int width = 0;
 	int height = 0;
+	int de_width = 2;
+	int de_height = 2;
 	AVFrame *frame = nullptr;
 	int n_bindings = 0;
 	XferQueue transfer_queue;
@@ -286,24 +288,24 @@ private:
 		case AV_PIX_FMT_YUVJ422P:
 		case AV_PIX_FMT_YUVJ444P:
 			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			vTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			vTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
 			break;
 
 		case AV_PIX_FMT_YUV420P10LE:
 			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			vTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+			uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+			vTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
 			break;
 
 		case AV_PIX_FMT_NV12:
 			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R8G8_UNORM);
+			uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8G8_UNORM);
 			break;
 
 		case AV_PIX_FMT_P010LE:
 			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			uTexture = create_plane_texture(width / 2, height / 2, SDL_GPU_TEXTUREFORMAT_R16G16_UNORM);
+			uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16G16_UNORM);
 			break;
 
 		case AV_PIX_FMT_RGBA:
@@ -327,7 +329,7 @@ private:
 			return;
 		transfer_queue.recycle();
 		
-		int bpp = 1;
+		int bpp;
 		switch (frame->format) {
 			case AV_PIX_FMT_P010LE:
 			case AV_PIX_FMT_YUV420P10LE:
@@ -339,6 +341,8 @@ private:
 			case AV_PIX_FMT_BGR24:
 				bpp = 4;
 				break;
+			default:
+				bpp = 1;
 		}
 
 		create_texture(frame);
@@ -347,13 +351,13 @@ private:
 		{
 		case 3:
 			upload_plane(pass, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
-			upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / 2, height / 2, bpp);
-			upload_plane(pass, frame->data[2], frame->linesize[2], vTexture, width / 2, height / 2, bpp);
+			upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / de_width, height / de_height, bpp);
+			upload_plane(pass, frame->data[2], frame->linesize[2], vTexture, width / de_width, height / de_height, bpp);
 			break;
 
 		case 2:
 			upload_plane(pass, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
-			upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / 2, height / 2, bpp * 2);
+			upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / de_width, height / de_height, bpp * 2);
 			break;
 
 		default:
@@ -450,6 +454,19 @@ public:
 	bool init_pipeline(AVPixelFormat fmt)
 	{
 		reset_pipeline();
+		switch (fmt) {
+			case AV_PIX_FMT_YUVJ444P:
+				de_width = 1;
+				de_height = 1;
+				break;
+			case AV_PIX_FMT_YUVJ422P:
+				de_width = 2;
+				de_height = 1;
+				break;
+			default:
+				de_width = 2;
+				de_height = 2;
+		}
 		ShaderType frag;
 		switch (fmt)
 		{
