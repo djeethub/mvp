@@ -1,18 +1,15 @@
-vec3 to_rgb(float y, float u, float v, int colorRange, int colorspace) {
+vec3 to_rgb(vec3 yuv, int colorRange, int colorspace) {
     // 2. Adjust for Range Bias (AVColorRange)
     // AVCOL_RANGE_JPEG = 2 (Full Range [0, 255])
     // AVCOL_RANGE_MPEG = 1 (Limited/Broadcast Range [16, 235])
     if (colorRange == 1) { 
-        y = (y - (16.0 / 255.0)) * (255.0 / 219.0);
-        u = (u - (128.0 / 255.0)) * (255.0 / 224.0);
-        v = (v - (128.0 / 255.0)) * (255.0 / 224.0);
+        yuv -= vec3(16.0 / 255.0, 128.0 / 255.0, 128.0 / 255.0);
+        yuv *= vec3(255.0 / 219.0, 255.0 / 224.0, 255.0 / 224.0);
     } else {
         // Full range still requires shifting Chroma components to center zero
-        u = u - (128.0 / 255.0);
-        v = v - (128.0 / 255.0);
+        yuv -= vec3(0.0, 128.0 / 255.0, 128.0 / 255.0);
     }
 
-    vec3 yuv = vec3(y, u, v);
     vec3 rgb;
 
     // 3. Apply the dynamic transformation matrix based on AVColorSpace

@@ -27,9 +27,7 @@ set(IMGUI_SRCS
 )
 set(SHADER_SOURCES
 #    shaders/lanczos-3.frag
-    shaders/test.frag
     shaders/vert.vert
-    shaders/common.frag
     shaders/ass.vert
     shaders/ass.frag
     shaders/rgb.frag
