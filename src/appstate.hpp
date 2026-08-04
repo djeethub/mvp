@@ -29,7 +29,8 @@
 // Define a unique event ID for our frame ticker
 Uint32 USEREVENT_NEXT_FRAME;
 Uint32 USEREVENT_SUBTITLE_ASS;
-#define NUM_USEREVENT   2
+const auto NUM_USEREVENT = 2;
+const auto LARGE_INTERVAL = 777777.7;
 
 namespace fs = std::filesystem;
 
@@ -452,7 +453,7 @@ struct AppState {
         return read_result;
     }
 
-    bool check_next_frame(double play_time) {
+    int64_t check_next_frame(double play_time) {
         if (video.is_video()) {
             AVFrame *frame_to_display = nullptr;
             bool need_fetch = false;
@@ -492,6 +493,7 @@ struct AppState {
 #endif
             if (frame_to_display)
             {
+                auto duration = frame_to_display->duration;
                 auto old_frame = video_frame.exchange(frame_to_display, std::memory_order_release);
                 ff::frame_recycle(old_frame);
 
@@ -499,19 +501,19 @@ struct AppState {
                 SDL_zero(event);
                 event.type = USEREVENT_NEXT_FRAME;
                 SDL_PushEvent(&event);
-                return true;
+                return duration;
             }
         }
 
-        return false;
+        return 0;
     }
 
-    double time_next_frame(double interval = 0.2)
+    double time_next_frame(double interval)
     {
         if (is_paused && !is_seeking)
-            return 77777;
+            return LARGE_INTERVAL;
         double play_time = is_seeking ? seek_time : get_play_time();
-        check_next_frame(play_time);
+        auto duration = check_next_frame(play_time);
         if (video.is_video()) {
             auto rlt = read_next_frame(play_time);
             if (rlt < 0) {
@@ -519,7 +521,7 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
                     if (is_loop && video_converter.empty()) {
 #else
-                    if (is_loop && video.video_frame_queue.empty()) {
+                    if (interval > 0 && is_loop && video.video_frame_queue.empty()) {
 #endif
                         if (seek(video.get_start_time(), false)) {
                             if (audio_stream) {
@@ -528,12 +530,7 @@ struct AppState {
                                     return static_cast<double>(bytes) / (44100 * 2 * sizeof(int16_t));
                                 }
                             }
-                            auto frame = video_frame.load(std::memory_order_relaxed);
-                            if (frame && frame->duration > 0) {
-                                return frame->duration * video.get_video_time_base();
-                            } else {
-                                return 0.001;
-                            }
+                            return duration > 0 ? duration * video.get_video_time_base() : 0.0;
                         }
                     }
                 }
@@ -543,10 +540,10 @@ struct AppState {
 #else
             if (video.video_frame_queue.empty()) {
 #endif
-                return 0; // Stop the timer if no more frames are available
+                return LARGE_INTERVAL; // Stop the timer if no more frames are available
             }
             if (is_seeking)
-                return 0.001;
+                return 0.0;
 #ifdef _VIDEO_CONVERTER_THREAD_
             auto frame_time = video_converter.next_play_time();
 #else
@@ -555,16 +552,20 @@ struct AppState {
             interval = frame_time - get_play_time();
 //            printf("interval: %f\n", interval);
             if (interval <= 0)
-                interval = 0.01;
+                interval = 0.0;
         } else {
             auto rlt = read_next_frame(play_time);
             if (rlt < 0) {
                 if (rlt == AVERROR_EOF && is_loop) {
-                    if (seek(0, false)) {
-                        return 0.02;
+                    if (seek(video.get_start_time(), false)) {
+                        auto bytes = SDL_GetAudioStreamQueued(audio_stream.get());
+                        if (bytes > 0) {
+                            return static_cast<double>(bytes) / (44100 * 2 * sizeof(int16_t));
+                        }
+                        return 0.0;
                     }
                 }
-                return 0;
+                interval = LARGE_INTERVAL;
             }
         }
         return interval;
@@ -658,7 +659,7 @@ struct AppState {
     
     static void fetch_thread_worker(AppState *state)
     {
-        double interval = 0.2;
+        double interval = 0.0;
         while (true)
         {
             std::unique_lock<std::mutex> lock(state->fetch_mutex);
@@ -666,8 +667,6 @@ struct AppState {
                 break;
             state->fetch_status = 0;
             interval = state->time_next_frame(interval);
-            if (interval == 0)
-                break;
             state->fetch_cv.wait_for(lock, std::chrono::microseconds(static_cast<int64_t>(interval * 1000000)), [state]{ return state->fetch_status != 0; });
         }
     }

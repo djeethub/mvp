@@ -25,7 +25,7 @@ void main() {
         // Expand kernel radius based on downscaling factor to aggregate all pixels
         vec2 radius = max(texelsPerPixel * 0.5, vec2(1.0));
         float totalWeight = 0.0;
-        float r_y = 0.0;
+        r_y = 0.0;
         // Sample across the footprint covering this destination pixel
         for (float y = -radius.y; y <= radius.y; y += 1.0) {
             for (float x = -radius.x; x <= radius.x; x += 1.0) {

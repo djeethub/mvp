@@ -29,11 +29,6 @@ static SDL_HitTestResult SDLCALL WindowHitTest(SDL_Window *win, const SDL_Point 
     return SDL_HITTEST_DRAGGABLE;
 }
 
-uint32_t SDLCALL TimerCallback(void* userdata, SDL_TimerID timerID, uint32_t interval) {
-    auto *state = static_cast<AppState*>(userdata);
-    return state->time_next_frame();
-}
-
 AppGui gui;
 AssHandler ass;
 
@@ -64,28 +59,6 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     SDL_ShowWindow(state->window.get());
     SDL_SetWindowHitTest(state->window.get(), WindowHitTest, nullptr);
     return SDL_APP_CONTINUE;
-}
-
-enum SDL_UpdateKind {
-    SDL_UPDATE_TEXTURE,   /* SDL_UpdateTexture  (packed / RGB) */
-    SDL_UPDATE_YUV,       /* SDL_UpdateYUVTexture (planar YUV) */
-    SDL_UPDATE_NV,        /* SDL_UpdateNVTexture  (NV12/NV21/P010) */
-    SDL_UPDATE_NONE
-};
-
-SDL_UpdateKind get_update_kind(SDL_PixelFormat format) {
-    switch (format) {
-        case SDL_PIXELFORMAT_IYUV:
-            return SDL_UPDATE_YUV;
-
-        case SDL_PIXELFORMAT_NV12:
-        case SDL_PIXELFORMAT_NV21:
-        case SDL_PIXELFORMAT_P010:
-            return SDL_UPDATE_NV;
-
-        default:
-            return SDL_UPDATE_TEXTURE;
-    }
 }
 
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {

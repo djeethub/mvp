@@ -500,19 +500,6 @@ public:
         return static_cast<double>(format_ctx->start_time * AV_TIME_BASE);
     }
 
-    static enum AVPixelFormat get_vaapi_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
-        const enum AVPixelFormat *p;
-
-        for (p = pix_fmts; *p != -1; p++) {
-            if (*p == AV_PIX_FMT_VAAPI) {
-                return *p;
-            }
-        }
-
-        std::cerr << "Failed to get HW surface format.\n";
-        return AV_PIX_FMT_NONE;
-    }
-
     void print_error_str(int err) {
         char err_buf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(err, err_buf, sizeof(err_buf));
