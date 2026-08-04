@@ -34,6 +34,7 @@ set(SHADER_SOURCES
     shaders/nv12.frag
     shaders/yuv.frag
     shaders/gray.frag
+    shaders/pal8.frag
 )
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

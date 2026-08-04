@@ -308,7 +308,7 @@ struct AppState {
         if (subtitle_ctx) {
             int target_w, target_h;
             video.get_video_dimensions(target_w, target_h);
-            ass.init(gpu.get_device(), gpu.get_sampler());
+            ass.init_gpu(gpu.get_device());
             ass.init(target_w, target_h, subtitle_ctx, window.get());
         }
 
@@ -388,7 +388,7 @@ struct AppState {
 #else
             auto video_frame_count = video.video_frame_queue.size();
 #endif
-            if (video_frame_count >= 2 && (!video.is_audio() || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
+            if (video_frame_count >= 1 && (!video.is_audio() || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
                 break;
             read_result = video.feed_frame(play_time, [&](AVFrame *frame) -> void {
                 if (!audio_stream)

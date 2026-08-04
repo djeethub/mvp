@@ -28,8 +28,7 @@ void main() {
         // Expand kernel radius based on downscaling factor to aggregate all pixels
         vec2 radius = max(texelsPerPixel * 0.5, vec2(1.0));
         float totalWeight = 0.0;
-        float r_y = 0.0;
-        vec2 r_uv = vec2(0.0);
+        yuv = vec3(0.0);
         // Sample across the footprint covering this destination pixel
         for (float y = -radius.y; y <= radius.y; y += 1.0) {
             for (float x = -radius.x; x <= radius.x; x += 1.0) {
@@ -37,16 +36,13 @@ void main() {
                 
                 // Gaussian-like weighting towards pixel center
                 float w = exp(-2.0 * (x*x + y*y) / (radius.x * radius.x + radius.y * radius.y + 1e-5));
-                r_y += texture(u_tex_y, sampleUV).r * w;
-                r_uv += texture(u_tex_uv, sampleUV).rg * w;
+                yuv += vec3(texture(u_tex_y, sampleUV).r, texture(u_tex_uv, sampleUV).rg) * w;
                 totalWeight += w;
             }
         }
-        yuv = vec3(r_y, r_uv.r, r_uv.g) / max(totalWeight, 1e-5);
+        yuv /= max(totalWeight, 1e-5);
     } else {
-        float y = texture(u_tex_y, v_uv).r;
-        vec2 uv_sampled = texture(u_tex_uv, v_uv).rg; 
-        yuv = vec3(y, uv_sampled.r, uv_sampled.g);
+        yuv = vec3(texture(u_tex_y, v_uv).r, texture(u_tex_uv, v_uv).rg);
     }
 
     vec3 rgb = to_rgb(yuv, uf.color_range, uf.colorspace);

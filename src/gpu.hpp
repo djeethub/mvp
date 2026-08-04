@@ -9,6 +9,7 @@
 #include "rgb.frag.h"
 #include "yuv.frag.h"
 #include "gray.frag.h"
+#include "pal8.frag.h"
 
 extern AssHandler ass;
 
@@ -18,7 +19,8 @@ enum ShaderType
 	RGB_FRAG,
 	NV12_FRAG,
 	YUV_FRAG,
-	GRAY_FRAG
+	GRAY_FRAG,
+	PAL8_FRAG
 };
 
 struct alignas(16) Vertform {
@@ -114,6 +116,9 @@ private:
 	int height = 0;
 	int de_width = 2;
 	int de_height = 2;
+	int wnd_w = 0;
+	int wnd_h = 0;
+	float base_scale = 0.0;
 	AVFrame *frame = nullptr;
 	int n_bindings = 0;
 	XferQueue transfer_queue;
@@ -176,6 +181,14 @@ private:
 			shader_info.num_uniform_buffers = 1;
 			shader_info.code = gray_frag;
 			shader_info.code_size = gray_frag_len;
+			break;
+
+		case PAL8_FRAG:
+			shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+			shader_info.num_samplers = 2;
+			shader_info.num_uniform_buffers = 1;
+			shader_info.code = pal8_frag;
+			shader_info.code_size = pal8_frag_len;
 			break;
 		}
 
@@ -271,9 +284,7 @@ private:
 
 	void push_uniforms(SDL_GPUCommandBuffer *cmd, const AVFrame *frame)
 	{
-		int wnd_w, wnd_h;
-		SDL_GetWindowSizeInPixels(window, &wnd_w, &wnd_h);
-		auto scale = SDL_max((float) wnd_w / frame->width, (float) wnd_h / frame->height) * video_scale;
+		auto scale = base_scale * video_scale;
 		float w = 2.0f * scale * frame->width / wnd_w;
 		float h = 2.0f * scale * frame->height / wnd_h;
 		Vertform tf = {
@@ -304,6 +315,7 @@ private:
 		SDL_Log("pixel_format %i\n", pixel_format);
 		width = frame->width;
 		height = frame->height;
+		reset_scale();
 
 		switch (pixel_format)
 		{
@@ -339,6 +351,11 @@ private:
 
 		case AV_PIX_FMT_GRAY8:
 			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			break;
+
+		case AV_PIX_FMT_PAL8:
+			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			uTexture = create_plane_texture(256, 1, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
 			break;
 
 		case AV_PIX_FMT_RGBA:
@@ -386,7 +403,10 @@ private:
 
 		case 2:
 			upload_plane(pass, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
-			upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / de_width, height / de_height, bpp * 2);
+			if (frame->format == AV_PIX_FMT_PAL8)
+				upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, 256, 1, 4);
+			else
+				upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / de_width, height / de_height, bpp * 2);
 			break;
 
 		default:
@@ -428,14 +448,11 @@ public:
 			return;
 		transfer_queue.clear();
 		destroy_textures();
-		if (sampler)
-			SDL_ReleaseGPUSampler(device, sampler);
+		SDL_ReleaseGPUSampler(device, sampler);
 		sampler = nullptr;
-		if (pipeline)
-			SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
+		SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
 		pipeline = nullptr;
-		if (device)
-			SDL_DestroyGPUDevice(device);
+		SDL_DestroyGPUDevice(device);
 		device = nullptr;
 		av_frame_free(&frame);
 		sws_free_context(&sws_ctx);
@@ -456,14 +473,6 @@ public:
 			return false;
 		}
 
-		SDL_GPUSamplerCreateInfo samp_info = {
-			.min_filter = SDL_GPU_FILTER_LINEAR,
-			.mag_filter = SDL_GPU_FILTER_LINEAR,
-			.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
-			.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-			.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-		};
-		sampler = SDL_CreateGPUSampler(device, &samp_info);
 		this->window = window;
 		transfer_queue.init(device);
 		return true;
@@ -474,18 +483,8 @@ public:
 		return device;
 	}
 
-	SDL_GPUSampler *get_sampler() {
-		return sampler;
-	}
-
-	void reset_pipeline() {
-		SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
-		pipeline = nullptr;
-	}
-
 	bool init_pipeline(AVPixelFormat fmt)
 	{
-		reset_pipeline();
 		switch (fmt) {
 			case AV_PIX_FMT_YUVJ444P:
 				de_width = 1;
@@ -522,11 +521,18 @@ public:
 			frag = GRAY_FRAG;
 			break;
 
+		case AV_PIX_FMT_PAL8:
+			n_bindings = 2;
+			frag = PAL8_FRAG;
+			break;
+
 		default:
 			n_bindings = 1;
 			frag = RGB_FRAG;
 			break;
 		}
+
+		SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
 		SDL_GPUShader *vs = load_shader(VERT);
 		SDL_GPUShader *fs = load_shader(frag);
 
@@ -544,9 +550,23 @@ public:
 		};
 		// add blend state, rasterizer, etc. if needed
 		pipeline = SDL_CreateGPUGraphicsPipeline(device, &pipe_info);
-
 		SDL_ReleaseGPUShader(device, vs);
 		SDL_ReleaseGPUShader(device, fs);
+
+		SDL_ReleaseGPUSampler(device, sampler);
+		SDL_GPUSamplerCreateInfo samp_info = {
+			.min_filter = SDL_GPU_FILTER_LINEAR,
+			.mag_filter = SDL_GPU_FILTER_LINEAR,
+			.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
+			.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+			.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+		};
+		if (fmt == AV_PIX_FMT_PAL8) {
+			samp_info.min_filter = SDL_GPU_FILTER_NEAREST;
+			samp_info.mag_filter = SDL_GPU_FILTER_NEAREST;
+		}
+		sampler = SDL_CreateGPUSampler(device, &samp_info);
+
 		transfer_queue.clear();
 		return true;
 	}
@@ -603,5 +623,14 @@ public:
 		{
 			SDL_Log("SDL_SubmitGPUCommandBuffer failed: %s", SDL_GetError());
 		}
+	}
+
+	void window_size_changed() {
+		SDL_GetWindowSizeInPixels(window, &wnd_w, &wnd_h);
+	}
+
+	void reset_scale() {
+		window_size_changed();
+		base_scale = SDL_max((float) wnd_w / width, (float) wnd_h / height);
 	}
 };

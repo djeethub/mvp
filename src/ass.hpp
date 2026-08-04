@@ -191,20 +191,30 @@ public:
 class AssHandler {
 public:
     void shutdown() {
-        if (pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
-            pipeline = nullptr;
-        }
+        SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
+        pipeline = nullptr;
+        SDL_ReleaseGPUSampler(device, sampler);
+        sampler = nullptr;
         xfer_pool.clear();
         tex_pool.clear();
         copy_pool.clear();
     }
 
-    void init(SDL_GPUDevice *device, SDL_GPUSampler *sampler) {
+    void init_gpu(SDL_GPUDevice *device) {
+        if (this->device)
+            return;
         this->device = device;
-        this->sampler = sampler;
         xfer_pool.init(device);
         tex_pool.init(device);
+
+		SDL_GPUSamplerCreateInfo samp_info = {
+			.min_filter = SDL_GPU_FILTER_LINEAR,
+			.mag_filter = SDL_GPU_FILTER_LINEAR,
+			.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
+			.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+			.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+		};
+		sampler = SDL_CreateGPUSampler(device, &samp_info);
     }
 
     bool init(int width, int height, AVCodecContext *subtitle_codec_ctx, SDL_Window *window) {

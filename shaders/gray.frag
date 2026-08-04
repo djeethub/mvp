@@ -14,7 +14,7 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 o_color;
 
 void main() {
-    vec3 rgb;
+    float r_y;
     // Calculate how many source texels fit inside ONE screen pixel
     vec2 duv_dx = dFdx(v_uv);
     vec2 duv_dy = dFdy(v_uv);
@@ -38,11 +38,9 @@ void main() {
             }
         }
         r_y /= max(totalWeight, 1e-5);
-        rgb = vec3(r_y, r_y, r_y);
     } else {
-        float c = texture(u_tex_y, v_uv).r;
-        rgb = vec3(c, c, c);
+        r_y = texture(u_tex_y, v_uv).r;
     }
 
-    o_color = vec4(rgb, 1.0);
+    o_color = vec4(r_y, r_y, r_y, 1.0);
 }

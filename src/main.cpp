@@ -204,6 +204,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                 case SDLK_1:
                     if (event->key.mod & SDL_KMOD_ALT) {
                         state->resize_window(0.5);
+                        state->gpu.reset_scale();
                         gui.show_noti("Window Scale: 0.5");
                     }
                     break;
@@ -211,6 +212,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     if (event->key.mod & SDL_KMOD_ALT)
                     {
                         state->resize_window(1);
+                        state->gpu.reset_scale();
                         gui.show_noti("Window Scale: 1");
                     }
                     break;
@@ -218,6 +220,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     if (event->key.mod & SDL_KMOD_ALT)
                     {
                         state->resize_window(2);
+                        state->gpu.reset_scale();
                         gui.show_noti("Window Scale: 2");
                     }
                     break;
@@ -254,6 +257,10 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     state->seek(state->video.get_start_time(), true);
                     break;
             }
+            break;
+
+        case SDL_EVENT_WINDOW_RESIZED:
+            state->gpu.window_size_changed();
             break;
 
         case SDL_EVENT_DROP_FILE:
