@@ -9,35 +9,11 @@
 
 #define N_EXTRA_SIZE 32
 
-struct alignas(16) TransformData {
-    float position[2]; // x, y (in NDC: -1.0 to 1.0)
-    float size[2];     // width, height (in NDC: 0.0 to 2.0)
-    float uv[2];
-    float padding[2];
-};
-
-struct CopyData {
-    SDL_GPUTexture *glyph_tex;
-    uint32_t color;
-    TransformData transform;
-};
-
-struct XferBuf {
-    SDL_GPUTransferBuffer *buf;
-    Uint32 size;
-};
-
-struct TexBuf {
-    SDL_GPUTexture *buf;
-    Uint32 w;
-    Uint32 h;
-};
-
 template <typename T>
 class GPUPool {
 protected:
-    std::queue<T *> queue;
-    std::queue<T *> in_use_queue;
+    std::vector<T *> in_use_list;
+    std::vector<T *> list;
     SDL_GPUDevice *device;
 
 public:
@@ -45,91 +21,135 @@ public:
         this->device = device;
     }
 
+    auto get_in_use() {
+        return in_use_list;
+    }
+
     void recycle(T *buf) {
-        queue.push(buf);
+        buf->reset();
+        list.push_back(buf);
     }
 
     void in_use(T *buf) {
-        in_use_queue.push(buf);
+        in_use_list.push_back(buf);
     }
 
     void recycle() {
-        while (!in_use_queue.empty()) {
-            queue.push(in_use_queue.front());
-            in_use_queue.pop();
+        for (auto it = in_use_list.begin(); it != in_use_list.end(); it++) {
+            (*it)->reset();
+            list.push_back((*it));
+        }
+        in_use_list.clear();
+    }
+
+    void destroy(T *data) {
+        data->destroy(device);
+        delete data;
+    }
+
+    void clear() {
+        recycle();
+        for (auto data : list) {
+            destroy(data);
+        }
+        list.clear();
+    }
+};
+
+struct Vertex {
+    float x, y;
+    float u, v;
+    float r, g, b, a;
+};
+
+struct AtlasRegion {
+    float u0, v0; // Top-Left UV
+    float u1, v1; // Bottom-Right UV
+};
+
+struct Atlas {
+    SDL_GPUTexture *tex;
+    Uint32 w;
+    Uint32 h;
+    SDL_GPUTransferBuffer *buf;
+    std::vector<Vertex> vertices;
+
+    SDL_GPUBuffer *vert_buf;
+
+// Shelf packer state
+    uint32_t current_x = 0;
+    uint32_t current_y = 0;
+    uint32_t current_shelf_height = 0;
+    const uint32_t padding = 1; // 1px padding to avoid bilinear filtering artifacts
+    Uint32 offset;
+
+    // Allocate space for a new glyph inside the atlas
+    bool alloc_region(uint32_t glyph_w, uint32_t glyph_h, uint32_t& out_x, uint32_t& out_y, AtlasRegion& out_uv) {
+        uint32_t alloc_w = glyph_w + padding;
+        uint32_t alloc_h = glyph_h + padding;
+
+        // Check if glyph fits on the current shelf
+        if (current_x + alloc_w > w) {
+            // Move down to next shelf
+            current_y += current_shelf_height;
+            current_x = 0;
+            current_shelf_height = 0;
+        }
+
+        // Check if atlas is completely full
+        if (current_y + alloc_h > h) {
+            return false; // Atlas full! Needs flush or clear.
+        }
+
+        out_x = current_x;
+        out_y = current_y;
+
+        // Calculate normalized UV coordinates
+        out_uv.u0 = (float)out_x / (float)w;
+        out_uv.v0 = (float)out_y / (float)h;
+        out_uv.u1 = (float)(out_x + glyph_w) / (float)w;
+        out_uv.v1 = (float)(out_y + glyph_h) / (float)h;
+
+        // Update shelf trackers
+        current_x += alloc_w;
+        if (alloc_h > current_shelf_height) {
+            current_shelf_height = alloc_h;
+        }
+
+        return true;
+    }
+
+    // Reset atlas state when cleared (or when seeking video)
+    void reset() {
+        vertices.clear();
+        current_x = 0;
+        current_y = 0;
+        current_shelf_height = 0;
+        offset = 0;
+        vert_buf = nullptr;
+    }
+
+    void destroy(SDL_GPUDevice* gpu) {
+        if (tex) {
+            SDL_ReleaseGPUTexture(gpu, tex);
+            tex = nullptr;
+        }
+        if (buf) {
+            SDL_ReleaseGPUTransferBuffer(gpu, buf);
+            buf = nullptr;
         }
     }
 };
 
-class XferPool : public GPUPool<XferBuf> {
-protected:
-    void destroy(XferBuf *buf) {
-        SDL_ReleaseGPUTransferBuffer(device, buf->buf);
-        delete buf;
-    }
-
-    int n_extra = 0;
-
+class AtlasPool : public GPUPool<Atlas> {
 public:
-    XferPool(int extra = 0) : n_extra(extra) {}
-
-    void clear() {
-        recycle();
-        while (!queue.empty()) {
-            destroy(queue.front());
-            queue.pop();
-        }
-    }
-
-    XferBuf *alloc(Uint32 size) {
-        while (!queue.empty()) {
-            auto d = queue.front();
-            queue.pop();
-            if (d->size >= size)
-                return d;
-            else
-                destroy(d);
+    Atlas *alloc(Uint32 w, Uint32 h) {
+        if (!list.empty()) {
+            auto data = list.back();
+            list.pop_back();
+            return data;
         }
 
-		SDL_GPUTransferBufferCreateInfo tb_info = {
-			.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-			.size = size + n_extra,
-		};
-		auto buf = SDL_CreateGPUTransferBuffer(device, &tb_info);
-        if (!buf)
-            return nullptr;
-		auto data = new XferBuf{.buf = buf, .size = tb_info.size};
-		return data;
-    }
-};
-
-class TexPool : public GPUPool<TexBuf> {
-protected:
-    void destroy(TexBuf *buf) {
-        SDL_ReleaseGPUTexture(device, buf->buf);
-        delete buf;
-    }
-
-public:
-    void clear() {
-        recycle();
-        while (!queue.empty()) {
-            destroy(queue.front());
-            queue.pop();
-        }
-    }
-
-    TexBuf *alloc(Uint32 w, Uint32 h) {
-        while (!queue.empty()) {
-            auto d = queue.front();
-            queue.pop();
-            if (d->w >= w && d->h >= h)
-                return d;
-            else
-                destroy(d);
-        }
-
-        w += N_EXTRA_SIZE; h += N_EXTRA_SIZE;
         SDL_GPUTextureCreateInfo tex_info = {};
         tex_info.type = SDL_GPU_TEXTURETYPE_2D;
         tex_info.format = SDL_GPU_TEXTUREFORMAT_R8_UNORM;
@@ -141,50 +161,80 @@ public:
         auto tex = SDL_CreateGPUTexture(device, &tex_info);
         if (!tex)
             return nullptr;
-		auto data = new TexBuf{.buf = tex, .w = w, .h = h };
-		return data;
+
+        SDL_GPUTransferBufferCreateInfo tb_info = {
+			.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+			.size = w * h,
+		};
+		auto buf = SDL_CreateGPUTransferBuffer(device, &tb_info);
+        if (!buf) {
+            SDL_ReleaseGPUTexture(device, tex);
+            return nullptr;
+        }
+ 
+        return new Atlas {
+            .tex = tex,
+            .w = w,
+            .h = h,
+            .buf = buf,
+        };
     }
 };
 
-class CopyDataPool {
-protected:
-    std::vector<CopyData *> in_use_list;
-    std::vector<CopyData *> list;
+struct VertexBuf {
+    SDL_GPUBuffer *buf;
+    SDL_GPUTransferBuffer *xfer_buf;
+    Uint32 size;
 
-public:
-    auto get_in_use() {
-        return in_use_list;
-    }
-
-    void recycle(CopyData *buf) {
-        list.push_back(buf);
-    }
-
-    void in_use(CopyData *buf) {
-        in_use_list.push_back(buf);
-    }
-
-    void recycle() {
-        list.insert(list.end(), in_use_list.begin(), in_use_list.end());
-        in_use_list.clear();
-    }
-
-    void clear() {
-        recycle();
-        for (auto data : list) {
-            delete data;
+    void destroy(SDL_GPUDevice *device) {
+        if (buf) {
+            SDL_ReleaseGPUBuffer(device, buf);
+            buf = nullptr;
         }
-        list.clear();
+        if (xfer_buf) {
+            SDL_ReleaseGPUTransferBuffer(device, xfer_buf);
+            xfer_buf = nullptr;
+        }
     }
 
-    CopyData *alloc() {
-        if (!list.empty()) {
+    void reset() {}
+};
+
+class VertexPool : public GPUPool<VertexBuf> {
+public:
+    VertexBuf *alloc(Uint32 size) {
+        while (!list.empty()) {
             auto data = list.back();
             list.pop_back();
-            return data;
+            if (data->size >= size)
+                return data;
+            data->destroy(device);
         }
 
-        return new CopyData;
+        size *= 2;
+        SDL_GPUBufferCreateInfo vb_info = {
+            .usage = SDL_GPU_BUFFERUSAGE_VERTEX,
+            .size = size
+        };
+        auto buf = SDL_CreateGPUBuffer(device, &vb_info);
+        if (!buf)
+            return nullptr;
+
+        SDL_GPUTransferBufferCreateInfo tb_info = {
+			.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+			.size = size,
+		};
+		auto xfer_buf = SDL_CreateGPUTransferBuffer(device, &tb_info);
+        if (!xfer_buf) {
+            SDL_ReleaseGPUBuffer(device, buf);
+            return nullptr;
+        }
+ 
+        return new VertexBuf {
+            .buf = buf,
+            .xfer_buf = xfer_buf,
+            .size = size
+        };
     }
 };
 
@@ -195,17 +245,16 @@ public:
         pipeline = nullptr;
         SDL_ReleaseGPUSampler(device, sampler);
         sampler = nullptr;
-        xfer_pool.clear();
-        tex_pool.clear();
-        copy_pool.clear();
+        atlas_pool.clear();
+        vertex_pool.clear();
     }
 
     void init_gpu(SDL_GPUDevice *device) {
         if (this->device)
             return;
         this->device = device;
-        xfer_pool.init(device);
-        tex_pool.init(device);
+        atlas_pool.init(device);
+        vertex_pool.init(device);
 
 		SDL_GPUSamplerCreateInfo samp_info = {
 			.min_filter = SDL_GPU_FILTER_LINEAR,
@@ -262,96 +311,120 @@ public:
         );
     }
 
-    struct Vertex {
-        float x, y;
-        float u, v;
-    };
+    void upload_vertices(SDL_GPUCopyPass *pass, Atlas *atlas) {
+        Uint32 size = atlas->vertices.size() * sizeof(Vertex);
+        auto vert = vertex_pool.alloc(size);
+        auto src = atlas->vertices.data();
+        void* v_map = SDL_MapGPUTransferBuffer(device, vert->xfer_buf, false);
+        SDL_memcpy(v_map, src, size);
+        SDL_UnmapGPUTransferBuffer(device, vert->xfer_buf);
+
+        SDL_GPUTransferBufferLocation v_transfer = { vert->xfer_buf, 0 };
+        SDL_GPUBufferRegion v_region = { vert->buf, 0, size };
+        SDL_UploadToGPUBuffer(pass, &v_transfer, &v_region, false);
+        atlas->vert_buf = vert->buf;
+        vertex_pool.in_use(vert);
+    }
 
     void prepare_draw(SDL_GPUCopyPass *pass, double play_time) {
         if (!ass_track)
             return;
 
-        xfer_pool.recycle();
-        tex_pool.recycle();
-        copy_pool.recycle();
+        atlas_pool.recycle();
+        vertex_pool.recycle();
 
         int changed = 0;
         // Ask libass to process the track at this specific millisecond frame marker
         ASS_Image* img = ass_render_frame(ass_renderer.get(), ass_track.get(), play_time * 1000, &changed);
         // 3. Draw the active text lines over the frame canvas
+        Atlas *atlas = nullptr;
         for (; img; img = img->next) {
 //            printf("SUCCESS: libass generated image chunks! w=%d, h=%d at position x=%d, y=%d\n", img->w, img->h, img->dst_x, img->dst_y);
             if (img->w == 0 || img->h == 0)
                 continue;
 
-            auto xfer = xfer_pool.alloc(img->w * img->h);
-            uint8_t* dst = (uint8_t*)SDL_MapGPUTransferBuffer(device, xfer->buf, false);
+            uint32_t out_x, out_y;
+            AtlasRegion out_uv;
+            while (true) {
+                if (!atlas) {
+                    atlas = atlas_pool.alloc(wnd_w, wnd_h / 2);
+                }
+                if (atlas->alloc_region(img->w, img->h, out_x, out_y, out_uv))
+                    break;
+                if (atlas->vertices.empty()) {
+                    atlas->destroy(device);
+                    delete atlas;
+                } else {
+                    upload_vertices(pass, atlas);
+                    atlas_pool.in_use(atlas);
+                }
+                atlas = nullptr;
+            }
+
+            uint8_t* dst = (uint8_t*)SDL_MapGPUTransferBuffer(device, atlas->buf, false);
+            dst += atlas->offset;
             const uint8_t* src = img->bitmap;
             for (int y = 0; y < img->h; ++y) {
                 SDL_memcpy(dst + (y * img->w), src + (y * img->stride), img->w);
             }
-            SDL_UnmapGPUTransferBuffer(device, xfer->buf);
+            SDL_UnmapGPUTransferBuffer(device, atlas->buf);
 
-            auto glyph = tex_pool.alloc(img->w, img->h);
             SDL_GPUTextureTransferInfo transfer_info = {
-                .transfer_buffer = xfer->buf
+                .transfer_buffer = atlas->buf,
+                .offset = atlas->offset
             };
             SDL_GPUTextureRegion region = {
-                .texture = glyph->buf,
+                .texture = atlas->tex,
+                .x = out_x,
+                .y = out_y,
                 .w = static_cast<Uint32>(img->w),
                 .h = static_cast<Uint32>(img->h),
                 .d = 1
             };
             SDL_UploadToGPUTexture(pass, &transfer_info, &region, false);
+            atlas->offset += img->w * img->h;
 
             // --- B. Convert Screen Coordinates to Normalized Device Coordinates (NDC) ---
             // libass gives pixel coordinates top-left (0,0) to bottom-right (screen_w, screen_h)
             float x0 = (2.0f * img->dst_x / wnd_w) - 1.0f;
             float y0 = 1.0f - (2.0f * img->dst_y / wnd_h);
-            float w1 = 2.0f * img->w / wnd_w;
-            float h1 = 2.0f * img->h / wnd_h;
-            float max_u = (float)img->w / (float)glyph->w;
-            float max_v = (float)img->h / (float)glyph->h;
+            float x1 = (2.0f * (img->dst_x + img->w) / wnd_w) - 1.0f;
+            float y1 = 1.0f - (2.0f * (img->dst_y + img->h) / wnd_h);
 
-            CopyData *data = copy_pool.alloc();
-            *data = {
-                .glyph_tex = glyph->buf,
-                .color = img->color,
-                .transform = {
-                    .position = { x0, y0 },
-                    .size = { w1, h1 },
-                    .uv = { max_u, max_v }
-                }
-            };
+            uint32_t c = img->color;
+            float r = ((c >> 24) & 0xFF) / 255.0f;
+            float g = ((c >> 16) & 0xFF) / 255.0f;
+            float b = ((c >> 8)  & 0xFF) / 255.0f;
+            float a = (255 - (c & 0xFF)) / 255.0f;
 
-            xfer_pool.in_use(xfer);
-            tex_pool.in_use(glyph);
-            copy_pool.in_use(data);
+            atlas->vertices.push_back({ x0, y0, out_uv.u0, out_uv.v0, r, g, b, a });
+            atlas->vertices.push_back({ x1, y0, out_uv.u1, out_uv.v0, r, g, b, a });
+            atlas->vertices.push_back({ x0, y1, out_uv.u0, out_uv.v1, r, g, b, a });
+//            atlas->vertices.push_back({ x1, y1, out_uv.u1, out_uv.v1, r, g, b, a });
+
+            atlas->vertices.push_back({ x0, y1, out_uv.u0, out_uv.v1, r, g, b, a });
+            atlas->vertices.push_back({ x1, y0, out_uv.u1, out_uv.v0, r, g, b, a });
+            atlas->vertices.push_back({ x1, y1, out_uv.u1, out_uv.v1, r, g, b, a });
+        }
+        if (atlas) {
+            upload_vertices(pass, atlas);
+            atlas_pool.in_use(atlas);
         }
     }
 
     void draw(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *pass) {
-        auto list = copy_pool.get_in_use();
+        auto list = atlas_pool.get_in_use();
         if (list.empty())
             return;
 
         SDL_BindGPUGraphicsPipeline(pass, pipeline);   // the one with blending enabled            
 
         for (auto data : list) {
-            uint32_t c = data->color;
-            float r = ((c >> 24) & 0xFF) / 255.0f;
-            float g = ((c >> 16) & 0xFF) / 255.0f;
-            float b = ((c >> 8)  & 0xFF) / 255.0f;
-            float a = (255 - (c & 0xFF)) / 255.0f; // libass opacity is inverted! (0 = opaque, 255 = transparent)
-
-            float color_uniform[4] = { r, g, b, a };
-
-            // --- D. Bind & Render Quad ---
-            SDL_GPUTextureSamplerBinding t_binding = { data->glyph_tex, sampler };
+            SDL_GPUTextureSamplerBinding t_binding = { data->tex, sampler };
             SDL_BindGPUFragmentSamplers(pass, 0, &t_binding, 1);
-            SDL_PushGPUVertexUniformData(cmd, 0, &data->transform, sizeof(data->transform));
-            SDL_PushGPUFragmentUniformData(cmd, 0, color_uniform, sizeof(color_uniform));
-            SDL_DrawGPUPrimitives(pass, 4, 1, 0, 0);
+            SDL_GPUBufferBinding v_binding = { data->vert_buf, 0 };
+            SDL_BindGPUVertexBuffers(pass, 0, &v_binding, 1);
+            SDL_DrawGPUPrimitives(pass, data->vertices.size(), 1, 0, 0);
         }
     }
 
@@ -365,38 +438,73 @@ private:
         if (pipeline)
             return true;
 
+        // 1. Configure Vertex Attributes matching GLSL layout(...) input locations
+        SDL_GPUVertexAttribute attrs[3] = {};
+
+        // Location 0: inPosition (vec2)
+        attrs[0].location = 0;
+        attrs[0].buffer_slot = 0;
+        attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+        attrs[0].offset = offsetof(Vertex, x);
+
+        // Location 1: inUV (vec2)
+        attrs[1].location = 1;
+        attrs[1].buffer_slot = 0;
+        attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+        attrs[1].offset = offsetof(Vertex, u);
+
+        // Location 2: inColor (vec4)
+        attrs[2].location = 2;
+        attrs[2].buffer_slot = 0;
+        attrs[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+        attrs[2].offset = offsetof(Vertex, r);
+
+        SDL_GPUVertexBufferDescription buffer_desc = {
+            .slot = 0,
+            .pitch = sizeof(float) * 8,
+        };
+
 		SDL_GPUShaderCreateInfo shader_info = {
             .code_size = ass_vert_len,
             .code = ass_vert,
 			.entrypoint = "main",
 			.format = SDL_GPU_SHADERFORMAT_SPIRV,
             .stage = SDL_GPU_SHADERSTAGE_VERTEX,
-            .num_uniform_buffers = 1
+            .num_uniform_buffers = 0
 		};
         SDL_GPUShader *vert_shader = SDL_CreateGPUShader(device, &shader_info);
         shader_info.code_size = ass_frag_len,
         shader_info.code = ass_frag;
         shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
 		shader_info.num_samplers = 1;
-    	shader_info.num_uniform_buffers = 1;
+    	shader_info.num_uniform_buffers = 0;
         SDL_GPUShader *frag_shader = SDL_CreateGPUShader(device, &shader_info);
 
         SDL_GPUGraphicsPipelineCreateInfo pipeline_info = {
             .vertex_shader = vert_shader,
             .fragment_shader = frag_shader,
-            .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP
+            .vertex_input_state = {
+                .vertex_buffer_descriptions = &buffer_desc,
+                .num_vertex_buffers = 1,
+                .vertex_attributes = attrs,
+                .num_vertex_attributes = 3,
+            },
+            .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
         };
 
         // 2. Enable Standard Alpha Blending
-        SDL_GPUColorTargetDescription color_desc = {};
-        color_desc.format = SDL_GetGPUSwapchainTextureFormat(device, window);
-        color_desc.blend_state.enable_blend = true;
-        color_desc.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-        color_desc.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        color_desc.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
-        color_desc.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-        color_desc.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        color_desc.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        SDL_GPUColorTargetDescription color_desc = {
+            .format = SDL_GetGPUSwapchainTextureFormat(device, window),
+            .blend_state = {
+                .src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+                .dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .color_blend_op = SDL_GPU_BLENDOP_ADD,
+                .src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE,
+                .dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .alpha_blend_op = SDL_GPU_BLENDOP_ADD,
+                .enable_blend = true,
+            }
+        };
 
         pipeline_info.target_info.color_target_descriptions = &color_desc;
         pipeline_info.target_info.num_color_targets = 1;
@@ -412,12 +520,11 @@ private:
     std::unique_ptr<ASS_Renderer, decltype(&ass_renderer_done)> ass_renderer{nullptr, ass_renderer_done};
     std::unique_ptr<ASS_Track, decltype(&ass_free_track)> ass_track{nullptr, ass_free_track};
     SDL_GPUGraphicsPipeline *pipeline = nullptr;
-    XferPool xfer_pool{N_EXTRA_SIZE * N_EXTRA_SIZE};
-    TexPool tex_pool;
     SDL_GPUDevice *device = nullptr;
     SDL_GPUTexture *glyph_tex = nullptr;
     int wnd_w = 0;
     int wnd_h = 0;
-    CopyDataPool copy_pool;
     SDL_GPUSampler *sampler = nullptr;
+    AtlasPool atlas_pool;
+    VertexPool vertex_pool;
 };
