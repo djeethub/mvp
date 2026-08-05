@@ -95,6 +95,7 @@ struct AppState {
     static inline const std::unordered_set<std::string> video_exts = { ".mp4", ".mkv", ".mov", ".flv", ".wmv", ".webm" };
     static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif" };
     MediaMode media_mode;
+    bool is_animated;
 
     AppState() : sub_queue(32) {
 #ifdef _VIDEO_CONVERTER_THREAD_
@@ -292,6 +293,7 @@ struct AppState {
 
         if (video.find_video_stream()) {
             if (video.open_video_decoder()) {
+                is_animated = false;
             }
         }
 
@@ -508,7 +510,7 @@ struct AppState {
         return 0;
     }
 
-    double time_next_frame(double interval)
+    double time_next_frame()
     {
         if (is_paused && !is_seeking)
             return LARGE_INTERVAL;
@@ -521,7 +523,7 @@ struct AppState {
 #ifdef _VIDEO_CONVERTER_THREAD_
                     if (is_loop && video_converter.empty()) {
 #else
-                    if (interval > 0 && is_loop && video.video_frame_queue.empty()) {
+                    if (is_animated && is_loop && video.video_frame_queue.empty()) {
 #endif
                         if (seek(video.get_start_time(), false)) {
                             if (audio_stream) {
@@ -542,6 +544,7 @@ struct AppState {
 #endif
                 return LARGE_INTERVAL; // Stop the timer if no more frames are available
             }
+            is_animated = true;
             if (is_seeking)
                 return 0.0;
 #ifdef _VIDEO_CONVERTER_THREAD_
@@ -549,10 +552,11 @@ struct AppState {
 #else
             auto frame_time = video.video_frame_queue.front()->pts * video.get_video_time_base();
 #endif
-            interval = frame_time - get_play_time();
+            double interval = frame_time - get_play_time();
 //            printf("interval: %f\n", interval);
             if (interval <= 0)
                 interval = 0.0;
+            return interval;
         } else {
             auto rlt = read_next_frame(play_time);
             if (rlt < 0) {
@@ -565,10 +569,10 @@ struct AppState {
                         return 0.0;
                     }
                 }
-                interval = LARGE_INTERVAL;
+                return LARGE_INTERVAL;
             }
+            return 0.02;
         }
-        return interval;
     }
 
     bool seek(double ts, bool reset) {
@@ -659,14 +663,13 @@ struct AppState {
     
     static void fetch_thread_worker(AppState *state)
     {
-        double interval = 0.0;
         while (true)
         {
             std::unique_lock<std::mutex> lock(state->fetch_mutex);
             if (state->fetch_status < 0)
                 break;
             state->fetch_status = 0;
-            interval = state->time_next_frame(interval);
+            double interval = state->time_next_frame();
             state->fetch_cv.wait_for(lock, std::chrono::microseconds(static_cast<int64_t>(interval * 1000000)), [state]{ return state->fetch_status != 0; });
         }
     }

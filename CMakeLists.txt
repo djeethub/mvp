@@ -9,11 +9,10 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 
 find_package(PkgConfig REQUIRED)
+find_package(SDL3 REQUIRED)
 pkg_check_modules(AVCODEC REQUIRED libavcodec libavformat libswresample libavutil libswscale)
 pkg_check_modules(LIBASS REQUIRED IMPORTED_TARGET libass)
 #find_package(Fontconfig REQUIRED)
-
-add_subdirectory(vendor/SDL EXCLUDE_FROM_ALL)
 
 # Define ImGui static source group
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui)
@@ -25,8 +24,12 @@ set(IMGUI_SRCS
     ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
     ${IMGUI_DIR}/backends/imgui_impl_sdlgpu3.cpp
 )
+# Create a static library target named 'my_imgui' entirely inside this scope
+add_library(my_imgui STATIC ${IMGUI_SRCS})
+set_target_properties(my_imgui PROPERTIES EXCLUDE_FROM_ALL TRUE)
+
+# Shaders
 set(SHADER_SOURCES
-#    shaders/lanczos-3.frag
     shaders/vert.vert
     shaders/ass.vert
     shaders/ass.frag
@@ -74,10 +77,7 @@ endforeach()
 
 add_custom_target(CompileShaders DEPENDS ${SPIRV_HEADER_FILES})
 
-# Create a static library target named 'my_imgui' entirely inside this scope
-add_library(my_imgui STATIC ${IMGUI_SRCS})
-set_target_properties(my_imgui PROPERTIES EXCLUDE_FROM_ALL TRUE)
-
+# FetchContent
 include(FetchContent)
 
 FetchContent_Declare(
@@ -101,9 +101,6 @@ target_include_directories(my_imgui PUBLIC
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
 )
-target_include_directories(my_imgui PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL/include
-)
 
 add_executable(main
     src/main.cpp
@@ -114,7 +111,6 @@ target_compile_definitions(main PRIVATE SDL_MAIN_USE_CALLBACKS=1)
 
 # Main project only needs to know about SDL headers (ImGui headers come automatically via link)
 target_include_directories(main PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL/include
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends
     ${AVCODEC_INCLUDE_DIRS}
@@ -130,3 +126,5 @@ target_link_libraries(main PRIVATE
     ${LIBASS_LIBRARIES}
 #    Fontconfig::Fontconfig
 )
+
+message(STATUS "CMake Search Paths: ${CMAKE_PREFIX_PATH}")
