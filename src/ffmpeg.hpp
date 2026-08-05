@@ -436,11 +436,11 @@ public:
     }
 
     bool is_audio() const {
-        return audio_stream_index >= 0;
+        return audio_codec_ctx != nullptr;
     }
 
     bool is_video() const {
-        return video_stream_index >= 0;
+        return video_codec_ctx != nullptr;
     }
 
     int64_t seek(int64_t ts)

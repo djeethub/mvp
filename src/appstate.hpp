@@ -383,7 +383,7 @@ struct AppState {
         return new_frame;
     }    
 
-    int read_next_frame(double play_time) {
+    int read_next_frame(double play_time, size_t n_preload = 1) {
         int read_result = 0;
         while (true) {
 #ifdef _VIDEO_CONVERTER_THREAD_
@@ -391,7 +391,7 @@ struct AppState {
 #else
             auto video_frame_count = video.video_frame_queue.size();
 #endif
-            if (video_frame_count >= 1 && (!video.is_audio() || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
+            if (video_frame_count >= n_preload && (!video.is_audio() || SDL_GetAudioStreamQueued(audio_stream.get()) > 22222))
                 break;
             read_result = video.feed_frame(play_time, [&](AVFrame *frame) -> void {
                 if (!audio_stream)
@@ -517,7 +517,7 @@ struct AppState {
         double play_time = is_seeking ? seek_time : get_play_time();
         auto duration = check_next_frame(play_time);
         if (video.is_video()) {
-            auto rlt = read_next_frame(play_time);
+            auto rlt = read_next_frame(play_time, 2);
             if (rlt < 0) {
                 if (rlt == AVERROR_EOF) {
 #ifdef _VIDEO_CONVERTER_THREAD_
