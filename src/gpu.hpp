@@ -10,6 +10,7 @@
 #include "yuv.frag.h"
 #include "gray.frag.h"
 #include "pal8.frag.h"
+#include "yuv_10.frag.h"
 
 extern AssHandler ass;
 
@@ -20,7 +21,8 @@ enum ShaderType
 	NV12_FRAG,
 	YUV_FRAG,
 	GRAY_FRAG,
-	PAL8_FRAG
+	PAL8_FRAG,
+	YUV_10_FRAG
 };
 
 struct alignas(16) Vertform {
@@ -35,28 +37,29 @@ struct alignas(16) Uniforms
 	int32_t colorspace;	 // 1 = 709, 9,10 = 2090
 };
 
-class XferQueue {
+struct XferData {
+	SDL_GPUTransferBuffer *buf;
+	Uint32 size;
+
+	void destroy(SDL_GPUDevice *device) {
+		if (buf)
+			SDL_ReleaseGPUTransferBuffer(device, buf);
+		delete this;
+	}
+
+	void reset() {}
+};
+
+class XferPool : public GPUPool<XferData> {
 public:
-	~XferQueue() {
-		clear();
-	}
-
-	struct Data {
-		SDL_GPUTransferBuffer *buf;
-		Uint32 size;
-	};
-
-	void init(SDL_GPUDevice *device) {
-		this->device = device;
-	}
-
-	Data *alloc(Uint32 size) {
-		if (!queue.empty()) {
-			auto data = queue.front();
+	XferData *alloc(Uint32 size) {
+		if (!list.empty()) {
+			auto data = list.back();
+			list.pop_back();
 			if (data->size >= size) {
-				queue.pop();
 				return data;
 			}
+			data->destroy(device);
 		}
 
 		SDL_GPUTransferBufferCreateInfo tb_info = {
@@ -66,39 +69,9 @@ public:
 		SDL_GPUTransferBuffer *buf = SDL_CreateGPUTransferBuffer(device, &tb_info);
 		if (!buf)
 			return nullptr;
-		auto data = new Data{.buf = buf, .size = size};
+		auto data = new XferData{.buf = buf, .size = size};
 		return data;
 	}
-
-	void recycle(Data *data) {
-		queue.push(data);
-	}
-
-	void recycle() {
-		while (!in_use_queue.empty()) {
-			queue.push(in_use_queue.front());
-			in_use_queue.pop();
-		}
-	}
-
-	void in_use(Data *data) {
-		in_use_queue.push(data);
-	}
-
-	void clear() {
-		recycle();
-		while (!queue.empty()) {
-			auto d = queue.front();
-			SDL_ReleaseGPUTransferBuffer(device, d->buf);
-			delete d;
-			queue.pop();
-		}
-	}
-
-private:
-	std::queue<Data *> queue;
-	std::queue<Data *> in_use_queue;
-	SDL_GPUDevice *device;
 };
 
 class AppGpu
@@ -121,7 +94,7 @@ private:
 	float base_scale = 0.0;
 	AVFrame *frame = nullptr;
 	int n_bindings = 0;
-	XferQueue transfer_queue;
+	XferPool xfer_pool;
 	SwsContext *sws_ctx = nullptr;
 
 	bool setup_sws_context(AVPixelFormat src_fmt, AVPixelFormat dst_fmt) {
@@ -173,6 +146,14 @@ private:
 			shader_info.num_uniform_buffers = 1;
 			shader_info.code = yuv_frag;
 			shader_info.code_size = yuv_frag_len;
+			break;
+
+		case YUV_10_FRAG:
+			shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+			shader_info.num_samplers = 3;
+			shader_info.num_uniform_buffers = 1;
+			shader_info.code = yuv_10_frag;
+			shader_info.code_size = yuv_10_frag_len;
 			break;
 
 		case GRAY_FRAG:
@@ -233,7 +214,7 @@ private:
 		Uint32 row_size = width * bytes_per_pixel;
 		Uint32 data_size = row_size * height;
 
-		auto buf_data = transfer_queue.alloc(data_size);
+		auto buf_data = xfer_pool.alloc(data_size);
 		if (!buf_data)
 			return false;
 
@@ -241,7 +222,7 @@ private:
 		void *mapped = SDL_MapGPUTransferBuffer(device, buf_data->buf, false);
 		if (!mapped)
 		{
-			transfer_queue.recycle(buf_data);
+			xfer_pool.recycle(buf_data);
 			return false;
 		}
 
@@ -277,7 +258,7 @@ private:
 
 		SDL_UploadToGPUTexture(pass, &src_info, &dst_region, false);
 
-		transfer_queue.in_use(buf_data);
+		xfer_pool.in_use(buf_data);
 
 		return true;
 	}
@@ -329,6 +310,8 @@ private:
 			break;
 
 		case AV_PIX_FMT_YUV420P10LE:
+		case AV_PIX_FMT_YUV422P10LE:
+		case AV_PIX_FMT_YUV444P10LE:
 			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
 			uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
 			vTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
@@ -373,12 +356,14 @@ private:
 	void prepare_texture_draw(SDL_GPUCopyPass *pass) {
 		if (!frame)
 			return;
-		transfer_queue.recycle();
+		xfer_pool.recycle();
 		
 		int bpp;
 		switch (frame->format) {
 			case AV_PIX_FMT_P010LE:
 			case AV_PIX_FMT_YUV420P10LE:
+			case AV_PIX_FMT_YUV422P10LE:
+			case AV_PIX_FMT_YUV444P10LE:
 				bpp = 2;
 				break;
 			case AV_PIX_FMT_RGBA:
@@ -446,7 +431,7 @@ public:
 	void shutdown() {
 		if (!device)
 			return;
-		transfer_queue.clear();
+		xfer_pool.clear();
 		destroy_textures();
 		SDL_ReleaseGPUSampler(device, sampler);
 		sampler = nullptr;
@@ -474,7 +459,7 @@ public:
 		}
 
 		this->window = window;
-		transfer_queue.init(device);
+		xfer_pool.init(device);
 		return true;
 	}
 
@@ -487,10 +472,12 @@ public:
 	{
 		switch (fmt) {
 			case AV_PIX_FMT_YUVJ444P:
+			case AV_PIX_FMT_YUV444P10LE:
 				de_width = 1;
 				de_height = 1;
 				break;
 			case AV_PIX_FMT_YUVJ422P:
+			case AV_PIX_FMT_YUV422P10LE:
 				de_width = 2;
 				de_height = 1;
 				break;
@@ -502,12 +489,18 @@ public:
 		switch (fmt)
 		{
 		case AV_PIX_FMT_YUV420P:
-		case AV_PIX_FMT_YUV420P10LE:
 		case AV_PIX_FMT_YUVJ420P:
 		case AV_PIX_FMT_YUVJ422P:
 		case AV_PIX_FMT_YUVJ444P:
 			n_bindings = 3;
 			frag = YUV_FRAG;
+			break;
+
+		case AV_PIX_FMT_YUV420P10LE:
+		case AV_PIX_FMT_YUV422P10LE:
+		case AV_PIX_FMT_YUV444P10LE:
+			n_bindings = 3;
+			frag = YUV_10_FRAG;
 			break;
 
 		case AV_PIX_FMT_NV12:
@@ -566,8 +559,6 @@ public:
 			samp_info.mag_filter = SDL_GPU_FILTER_NEAREST;
 		}
 		sampler = SDL_CreateGPUSampler(device, &samp_info);
-
-		transfer_queue.clear();
 		return true;
 	}
 
@@ -625,12 +616,13 @@ public:
 		}
 	}
 
-	void window_size_changed() {
-		SDL_GetWindowSizeInPixels(window, &wnd_w, &wnd_h);
+	void window_size_changed(Sint32 w, Sint32 h) {
+		wnd_w = w;
+		wnd_h = h;
 	}
 
 	void reset_scale() {
-		window_size_changed();
+		SDL_GetWindowSizeInPixels(window, &wnd_w, &wnd_h);
 		base_scale = SDL_max((float) wnd_w / width, (float) wnd_h / height);
 	}
 };

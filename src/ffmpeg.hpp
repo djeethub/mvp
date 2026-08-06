@@ -566,6 +566,7 @@ public:
     auto get_audio_index() const { return audio_stream_index; }
     auto get_subtitle_ctx() { return subtitle_codec_ctx; }
     auto get_video_ctx() { return video_codec_ctx; }
+    auto get_format_ctx() { return format_ctx; }
 #ifdef _VIDEO_CONVERTER_THREAD_
     PacketQueue video_packet_queue;
 #endif

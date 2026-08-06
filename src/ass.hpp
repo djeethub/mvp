@@ -7,8 +7,6 @@
 #include "ass.vert.h"
 #include "ass.frag.h"
 
-#define N_EXTRA_SIZE 32
-
 template <typename T>
 class GPUPool {
 protected:
@@ -35,16 +33,16 @@ public:
     }
 
     void recycle() {
-        for (auto it = in_use_list.begin(); it != in_use_list.end(); it++) {
-            (*it)->reset();
-            list.push_back((*it));
+        while (!in_use_list.empty()) {
+            auto data = in_use_list.back();
+            data->reset();
+            list.push_back(data);
+            in_use_list.pop_back();
         }
-        in_use_list.clear();
     }
 
     void destroy(T *data) {
         data->destroy(device);
-        delete data;
     }
 
     void clear() {
@@ -130,14 +128,11 @@ struct Atlas {
     }
 
     void destroy(SDL_GPUDevice* gpu) {
-        if (tex) {
+        if (tex)
             SDL_ReleaseGPUTexture(gpu, tex);
-            tex = nullptr;
-        }
-        if (buf) {
+        if (buf)
             SDL_ReleaseGPUTransferBuffer(gpu, buf);
-            buf = nullptr;
-        }
+        delete this;
     }
 };
 
@@ -187,14 +182,11 @@ struct VertexBuf {
     Uint32 size;
 
     void destroy(SDL_GPUDevice *device) {
-        if (buf) {
+        if (buf)
             SDL_ReleaseGPUBuffer(device, buf);
-            buf = nullptr;
-        }
-        if (xfer_buf) {
+        if (xfer_buf)
             SDL_ReleaseGPUTransferBuffer(device, xfer_buf);
-            xfer_buf = nullptr;
-        }
+        delete this;
     }
 
     void reset() {}
@@ -211,7 +203,7 @@ public:
             data->destroy(device);
         }
 
-        size *= 2;
+        size *= 3;
         SDL_GPUBufferCreateInfo vb_info = {
             .usage = SDL_GPU_BUFFERUSAGE_VERTEX,
             .size = size
@@ -249,7 +241,7 @@ public:
         vertex_pool.clear();
     }
 
-    void init_gpu(SDL_GPUDevice *device) {
+    void init_once(SDL_GPUDevice *device) {
         if (this->device)
             return;
         this->device = device;
@@ -264,22 +256,22 @@ public:
 			.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
 		};
 		sampler = SDL_CreateGPUSampler(device, &samp_info);
+
+        ass_library.reset(ass_library_init());
     }
 
-    bool init(int width, int height, AVCodecContext *subtitle_codec_ctx, SDL_Window *window) {
+    bool init(int width, int height, AVCodecContext *subtitle_codec_ctx, AVFormatContext *format_ctx, SDL_Window *window) {
         ass_track.reset();
         ass_renderer.reset();
-
         SDL_GetWindowSizeInPixels(window, &wnd_w, &wnd_h);
 
         // 1. Initialize your standard libass environment
-        if (!ass_library)
-            ass_library.reset(ass_library_init());
+        load_embedded_fonts(format_ctx);
         ass_renderer.reset(ass_renderer_init(ass_library.get()));
-        ass_set_fonts(ass_renderer.get(), nullptr, "Sans", 1, nullptr, 1);
+        ass_set_fonts(ass_renderer.get(), nullptr, "Sans", 1, nullptr, 0);
         ass_set_storage_size(ass_renderer.get(), width, height);
         ass_set_frame_size(ass_renderer.get(), wnd_w, wnd_h); // Match your window canvas size
-//        ass_set_hinting(ass_renderer.get(), ASS_HINTING_NONE);
+        ass_set_hinting(ass_renderer.get(), ASS_HINTING_NATIVE);
 
         // 2. Create an EMPTY, blank track that you will feed packets manually
         ass_track.reset(ass_new_track(ass_library.get()));
@@ -295,6 +287,39 @@ public:
         }
         return false;
     }
+
+    void load_embedded_fonts(AVFormatContext* format_ctx) {
+        ass_clear_fonts(ass_library.get());
+
+        // Loop through all tracks/streams in the container
+        for (unsigned int i = 0; i < format_ctx->nb_streams; i++) {
+            AVStream* stream = format_ctx->streams[i];
+            
+            // Look specifically for file attachments
+            if (stream->codecpar->codec_type == AVMEDIA_TYPE_ATTACHMENT) {
+                
+                // Extract the font filename from metadata
+                std::string font_name = "unknown_font";
+                AVDictionaryEntry* tag = av_dict_get(stream->metadata, "filename", nullptr, 0);
+                if (tag && tag->value) {
+                    font_name = tag->value;
+                }
+
+                // Verify that the attachment contains data
+                if (stream->codecpar->extradata && stream->codecpar->extradata_size > 0) {
+                    
+                    char* font_data = reinterpret_cast<char*>(stream->codecpar->extradata);
+                    int font_data_size = stream->codecpar->extradata_size;
+
+                    // Register the raw font buffer into libass's internal memory pool
+                    ass_add_font(ass_library.get(), font_name.c_str(), font_data, font_data_size);
+                    
+                    std::cout << "Successfully matched and loaded font: " << font_name 
+                            << " (" << font_data_size << " bytes)" << std::endl;
+                }
+            }
+        }
+    }   
 
     void flush() {
         if (ass_track)
@@ -353,7 +378,6 @@ public:
                     break;
                 if (atlas->vertices.empty()) {
                     atlas->destroy(device);
-                    delete atlas;
                 } else {
                     upload_vertices(pass, atlas);
                     atlas_pool.in_use(atlas);
@@ -428,9 +452,11 @@ public:
         }
     }
 
-    void set_target_size(int width, int height) {
+    void window_size_changed(Sint32 w, Sint32 h) {
+        wnd_w = w;
+        wnd_h = h;
         if (ass_renderer)
-            ass_set_frame_size(ass_renderer.get(), width, height); // Match your window canvas size        
+            ass_set_frame_size(ass_renderer.get(), wnd_w, wnd_h); // Match your window canvas size
     }
 
 private:

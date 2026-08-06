@@ -233,7 +233,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             break;
 
         case SDL_EVENT_WINDOW_RESIZED:
-            state->gpu.window_size_changed();
+            state->gpu.window_size_changed(event->window.data1, event->window.data2);
             break;
 
         case SDL_EVENT_DROP_FILE:

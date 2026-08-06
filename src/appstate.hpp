@@ -311,8 +311,8 @@ struct AppState {
         if (subtitle_ctx) {
             int target_w, target_h;
             video.get_video_dimensions(target_w, target_h);
-            ass.init_gpu(gpu.get_device());
-            ass.init(target_w, target_h, subtitle_ctx, window.get());
+            ass.init_once(gpu.get_device());
+            ass.init(target_w, target_h, subtitle_ctx, video.get_format_ctx(), window.get());
         }
 
 #ifdef _VIDEO_CONVERTER_THREAD_

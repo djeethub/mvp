@@ -36,6 +36,7 @@ set(SHADER_SOURCES
     shaders/rgb.frag
     shaders/nv12.frag
     shaders/yuv.frag
+    shaders/yuv_10.frag
     shaders/gray.frag
     shaders/pal8.frag
 )
