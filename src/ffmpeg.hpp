@@ -17,8 +17,25 @@ extern "C" {
 }
 
 #include "concurrentqueue.h"
+#include "readerwriterqueue.h"
+#include "twowayqueue.hpp"
 
 namespace ff {
+
+enum Status {
+    Play = 0,
+    Reset,
+    Quit,
+};
+
+const auto LARGE_INTERVAL = 777777.7;
+const double PRELOAD_TIME  = 0.2;
+
+struct Subtitle {
+    std::string text;
+    double pts;
+    double duration;
+};
 
 struct ChapterData {
     std::string title;
@@ -149,13 +166,39 @@ public:
         close();
         av_packet_free(&packet);
         av_frame_free(&frame);
-        av_frame_free(&video_frame);
     }
 
     VideoFile(const VideoFile&) = delete;
     VideoFile& operator=(const VideoFile&) = delete;
     VideoFile(VideoFile&&) = delete;
     VideoFile& operator=(VideoFile&&) = delete;
+
+    auto get_duration() const { return duration; }
+    auto get_video_time_base() const { return video_time_base; }
+    auto get_audio_time_base() const { return audio_time_base; }
+    auto get_subtitle_time_base() const { return subtitle_time_base; }
+    auto get_audio_channels() const { return audio_codec_ctx->ch_layout.nb_channels; }
+    auto get_audio_sample_rate() const { return audio_codec_ctx->sample_rate; }
+    auto get_subtitle_tracks() const { return subtitle_list; }
+    auto get_audio_tracks() const { return audio_list; }
+    auto get_subtitle_index() const { return subtitle_stream_idx; }
+    auto get_audio_index() const { return audio_stream_index; }
+    auto get_subtitle_ctx() const { return subtitle_codec_ctx; }
+    auto get_video_ctx() const { return video_codec_ctx; }
+    auto get_format_ctx() const { return format_ctx; }
+    auto is_audio() const { return audio_codec_ctx != nullptr; }
+    auto is_video() const { return video_codec_ctx != nullptr; }
+
+    moodycamel::ReaderWriterQueue<AVFrame *> audio_frame_queue;
+    moodycamel::ReaderWriterQueue<AVFrame *> video_frame_queue;
+    TwowayQueue<Subtitle *> sub_queue{32};
+    std::mutex mutex;
+    std::condition_variable cv;
+    Status status = Play;
+    bool is_loop = true;
+    bool is_paused = false;
+    bool is_seeking = false;
+    double seek_time;
 
     bool open(const std::string &filename)
     {
@@ -173,6 +216,8 @@ public:
             return false;
         }
         duration = static_cast<double>(format_ctx->duration) / AV_TIME_BASE;
+        if (!packet) packet = av_packet_alloc();
+        if (!frame) frame = frame_pool.alloc();
         return true;
     }
 
@@ -324,64 +369,6 @@ public:
         return true;
     }
 
-    template <typename AudioFeedFunc, typename VideoFeedFunc, typename SubtitleFeedFunc>
-    int feed_frame(double play_time, AudioFeedFunc audio_feed, VideoFeedFunc video_feed, SubtitleFeedFunc subtitle_feed)
-    {
-        if (!packet) packet = av_packet_alloc();
-        if (!frame) frame = frame_pool.alloc();
-
-        auto read_result = av_read_frame(format_ctx, packet);
-        if (read_result < 0 && read_result != AVERROR_EOF)
-            return read_result;
-
-        if (packet->stream_index == audio_stream_index)
-        {
-            if (packet->pts * audio_time_base >= play_time && avcodec_send_packet(audio_codec_ctx, packet) >= 0)
-            {
-                while (avcodec_receive_frame(audio_codec_ctx, frame) >= 0)
-                {
-                    if (frame->pts != AV_NOPTS_VALUE)
-                        audio_feed(frame);
-                    av_frame_unref(frame);
-                }
-            }
-        }
-        else if (packet->stream_index == video_stream_index)
-        {
-            video_feed(packet);
-        }
-        else if (packet->stream_index == subtitle_stream_idx) {
-            int got_subtitle = 0;
-            AVSubtitle subtitle;
-            // avcodec_decode_subtitle2 is old but still the standard way to handle subtitles in modern FFmpeg
-            if (avcodec_decode_subtitle2(subtitle_codec_ctx, &subtitle, &got_subtitle, packet) >= 0) {
-                if (got_subtitle) {
-                    subtitle_feed(subtitle, packet);
-                    // Free the allocated subtitle struct memory
-                    avsubtitle_free(&subtitle);
-                }
-            }
-        }
-        av_packet_unref(packet);
-
-        return read_result;
-    }
-
-    template <typename VideoFeedFunc>
-    void feed_video_frame(AVPacket *packet, VideoFeedFunc video_feed) {
-        if (!video_frame) video_frame = frame_pool.alloc();
-        if (avcodec_send_packet(video_codec_ctx, packet) >= 0)
-        {
-            while (avcodec_receive_frame(video_codec_ctx, video_frame) >= 0)
-            {
-                if (video_frame->pts != AV_NOPTS_VALUE) {
-                    video_feed(video_frame);
-                }
-                av_frame_unref(video_frame);
-            }
-        }
-    }
-
     void convert_audio_frame(AVFrame *frame, AudioBuffer *audio_buf)
     {
         // 1. Calculate max potential samples we will get after conversion
@@ -423,6 +410,10 @@ public:
         subtitle_stream_idx = -1;
         subtitle_list.clear();
         audio_list.clear();
+        is_loopable = false;
+        is_seeking = false;
+        last_video_time = 0.0;
+        last_audio_time = 0.0;
     }
 
     void get_video_dimensions(int& width, int& height) const {
@@ -433,14 +424,6 @@ public:
             width = 0;
             height = 0;
         }
-    }
-
-    bool is_audio() const {
-        return audio_codec_ctx != nullptr;
-    }
-
-    bool is_video() const {
-        return video_codec_ctx != nullptr;
     }
 
     int64_t seek(int64_t ts)
@@ -460,6 +443,29 @@ public:
         }
         return seek_result;
     }
+
+    bool seek(double ts) {
+        if (seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0) {
+            set_seeking(true, ts);
+            last_video_time = ts;
+            last_audio_time = ts;
+            return true;
+        } else
+            return false;
+    }
+
+    void set_seeking(bool set, double ts) {
+        if (set) {
+            is_seeking = true;
+            seek_time = ts;
+            set_skip(AVDISCARD_NONREF, AVDISCARD_ALL, AVDISCARD_ALL);
+//            clear_frame_buffers();
+        } else {
+            is_seeking = false;
+            seek_time = ts;
+            set_skip(AVDISCARD_DEFAULT, AVDISCARD_DEFAULT, AVDISCARD_DEFAULT);
+        }
+    }    
 
     std::vector<ChapterData> read_chapters() {
         std::vector<ChapterData> chapter_list;
@@ -530,6 +536,185 @@ public:
         video_codec_ctx->skip_idct = idct;
     }
 
+    void add_subtitle(const std::string& text, AVPacket *packet) {
+        auto data = sub_queue.alloc();
+        data->text = text;
+        data->pts = packet->pts * get_subtitle_time_base();
+        data->duration = packet->duration * get_subtitle_time_base();
+        sub_queue.enqueue(std::move(data));
+    }
+
+    int read_next_frame(double play_time, bool preload = false) {
+        int read_result;
+        double target_play_time = play_time + PRELOAD_TIME;
+
+        while ((is_video() && last_video_time < target_play_time) || (is_audio() && last_audio_time < target_play_time)) {
+            read_result = av_read_frame(format_ctx, packet);
+            if (read_result < 0 && read_result != AVERROR_EOF)
+                return read_result;
+
+            if (packet->stream_index == audio_stream_index)
+            {
+                last_audio_time = packet->pts * get_audio_time_base();
+                if ((!is_seeking || last_audio_time >= play_time) && avcodec_send_packet(audio_codec_ctx, packet) >= 0)
+                {
+                    while (avcodec_receive_frame(audio_codec_ctx, frame) >= 0)
+                    {
+                        if (frame->pts != AV_NOPTS_VALUE) {
+                            if (is_seeking) {
+                                play_time = last_audio_time;
+                                set_seeking(false, play_time);
+                                set_play_time(play_time);
+                            }
+                            auto new_frame = frame_alloc();
+                            av_frame_move_ref(new_frame, frame);
+                            audio_frame_queue.enqueue(new_frame);
+                        }
+                        av_frame_unref(frame);
+                    }
+                }
+            }
+            else if (packet->stream_index == video_stream_index)
+            {
+                if (avcodec_send_packet(video_codec_ctx, packet) >= 0)
+                {
+                    while (avcodec_receive_frame(video_codec_ctx, frame) >= 0)
+                    {
+                        if (frame->pts != AV_NOPTS_VALUE) {
+                            last_video_time = frame->pts * get_video_time_base();
+                            if (!is_seeking || last_video_time >= play_time) {
+                                if (is_seeking) {
+                                    play_time = last_video_time;
+                                    set_seeking(false, seek_time);
+                                    set_play_time(play_time);
+                                }
+                                auto new_frame = frame_alloc();
+                                if (frame->format == AV_PIX_FMT_VAAPI) {
+                                    auto err = av_hwframe_transfer_data(new_frame, frame, 0);
+                                    if (err != 0) SDL_Log("av_hwframe_transfer_data failed: %s\n", av_err2str(err));
+                                    new_frame->pts = frame->pts;
+                                    new_frame->duration = frame->duration;
+                                }
+                                else {
+                                    av_frame_move_ref(new_frame, frame);
+                                }
+                                video_frame_queue.enqueue(new_frame);
+                            }
+                        }
+                        av_frame_unref(frame);
+                    }
+                }
+            }
+            else if (packet->stream_index == subtitle_stream_idx) {
+                int got_subtitle = 0;
+                AVSubtitle subtitle;
+                // avcodec_decode_subtitle2 is old but still the standard way to handle subtitles in modern FFmpeg
+                if (avcodec_decode_subtitle2(subtitle_codec_ctx, &subtitle, &got_subtitle, packet) >= 0) {
+                    if (got_subtitle) {
+                        for (unsigned int i = 0; i < subtitle.num_rects; i++) {
+                            AVSubtitleRect* rect = subtitle.rects[i];
+                            if (rect->type == SUBTITLE_TEXT && rect->text) {
+                                add_subtitle(rect->text, packet);
+                            } 
+                            else if (rect->type == SUBTITLE_ASS && rect->ass) {
+                                // ASS subtitles contain formatting markers (e.g., {\an8}) alongside text
+        //                        std::cout << "<" << subtitle.start_display_time << "ms> " << rect->ass << "\n";
+        //                        set_subtitle(extract_dialogue_ass(rect->ass), packet->duration * video.subtitle_time_base);
+        //                        ass.add_ass(rect, packet->pts * video.subtitle_time_base * 1000, packet->duration * video.subtitle_time_base * 1000);
+                                add_subtitle(rect->ass, packet);
+                            }
+                        }                    
+
+                        avsubtitle_free(&subtitle);
+                    }
+                }
+            }
+            av_packet_unref(packet);
+
+            if (!preload && last_video_time > play_time)
+                break;
+        }
+
+        return read_result;
+    }
+
+    double time_next_frame() {
+        if (is_paused && !is_seeking)
+            return LARGE_INTERVAL;
+        double play_time = is_seeking ? seek_time : get_play_time();
+        if (is_video()) {
+            auto rlt = read_next_frame(play_time, true);
+//            SDL_Log("%i %i\n", audio_frame_queue.size_approx(), video_frame_queue.size_approx());
+            if (rlt < 0) {
+                if (rlt == AVERROR_EOF) {
+                    if (is_loopable && is_loop) {
+                        if (seek(get_start_time())) {
+                            return 0.0;
+                        }
+                    }
+                }
+                return LARGE_INTERVAL;
+            }
+            if (is_seeking)
+                return 0.0;
+            return 0.1;
+        } else {
+            auto rlt = read_next_frame(play_time, true);
+            if (rlt < 0) {
+                if (rlt == AVERROR_EOF && is_loop) {
+                    if (seek(get_start_time())) {
+                        return 0.0;
+                    }
+                }
+                return LARGE_INTERVAL;
+            }
+            return 0.1;
+        }
+    }
+
+    static void thread_worker(VideoFile *video)
+    {
+        while (true)
+        {
+            std::unique_lock<std::mutex> lock(video->mutex);
+            if (video->status == Quit)
+                break;
+            video->status = Play;
+            double interval = video->time_next_frame();
+            video->cv.wait_for(lock, std::chrono::microseconds(static_cast<int64_t>(interval * 1000000)), [video]{ return video->status != Play; });
+        }
+    }
+
+    void start_thread() {
+        if (!thread.joinable()) {
+            thread = std::thread(thread_worker, this);
+            pthread_setname_np(thread.native_handle(), "media");
+        }
+    }
+
+    void stop_thead() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            status = Quit;
+        }
+        cv.notify_one();
+        if (thread.joinable())
+            thread.join();
+    }
+
+    static double get_ticks() {
+        return static_cast<double>(SDL_GetPerformanceCounter()) / SDL_GetPerformanceFrequency();
+    }
+
+    void set_play_time(double play_time)
+    {
+        tick_diff = get_ticks() - play_time;
+    }
+
+    double get_play_time() const {
+        return is_paused ? seek_time : (get_ticks() - tick_diff);
+    }
+
 private:
     AVFormatContext* format_ctx = nullptr;
     AVCodecContext* audio_codec_ctx = nullptr;
@@ -541,7 +726,6 @@ private:
 
     AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
-    AVFrame* video_frame = nullptr;
     std::vector<AudioData> subtitle_list;
     std::vector<AudioData> audio_list;
     std::vector<std::string> sub_lang_pref = {"en", "eng", "ja", "jpn"};
@@ -552,24 +736,10 @@ private:
     double video_time_base = 0.0;
     double audio_time_base = 0.0;
     double subtitle_time_base = 0.0;
-
-public:
-    auto get_duration() const { return duration; }
-    auto get_video_time_base() const { return video_time_base; }
-    auto get_audio_time_base() const { return audio_time_base; }
-    auto get_subtitle_time_base() const { return subtitle_time_base; }
-    auto get_audio_channels() const { return audio_codec_ctx->ch_layout.nb_channels; }
-    auto get_audio_sample_rate() const { return audio_codec_ctx->sample_rate; }
-    auto get_subtitle_tracks() const { return subtitle_list; }
-    auto get_audio_tracks() const { return audio_list; }
-    auto get_subtitle_index() const { return subtitle_stream_idx; }
-    auto get_audio_index() const { return audio_stream_index; }
-    auto get_subtitle_ctx() { return subtitle_codec_ctx; }
-    auto get_video_ctx() { return video_codec_ctx; }
-    auto get_format_ctx() { return format_ctx; }
-#ifdef _VIDEO_CONVERTER_THREAD_
-    PacketQueue video_packet_queue;
-#endif
-    FrameQueue video_frame_queue;
+    std::thread thread;
+    bool is_loopable;
+    double tick_diff;
+    double last_video_time;
+    double last_audio_time;
 };
 } // namespace ff

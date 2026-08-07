@@ -284,11 +284,11 @@ class AppGui {
                     if (state->open_next_file(false))
                         show_noti(state->get_file_name());
                 }*/
-                if (ImGui::MenuItem(state->is_paused ? "Resume" : "Pause", "Space", false, true))
+                if (ImGui::MenuItem(state->video.is_paused ? "Resume" : "Pause", "Space", false, true))
                 {
                     state->pause();
-                    show_noti(state->is_paused ? "Paused" : "Resumed");
-                    if (state->is_paused) {
+                    show_noti(state->video.is_paused ? "Paused" : "Resumed");
+                    if (state->video.is_paused) {
                         SDL_Event event;
                         SDL_zero(event);
                         event.type = SDL_EVENT_FIRST;

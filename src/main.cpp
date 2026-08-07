@@ -84,13 +84,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             state->gpu.set_frame(video_frame, state->get_play_time());
 //            state->gpu.render();
         }
-        return SDL_APP_CONTINUE;
-    } else if (event->type == USEREVENT_SUBTITLE_ASS) {
-        Subtitle *subtitle;
-        while (state->sub_queue.dequeue(subtitle)) {
+        ff::Subtitle *subtitle;
+        while (state->video.sub_queue.dequeue(subtitle)) {
             ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
 //                printf("subtitle: %s, %f, %f\n", subtitle->text.c_str(), subtitle->pts, subtitle->duration);
-            state->sub_queue.recycle(subtitle);
+            state->video.sub_queue.recycle(subtitle);
         }
         return SDL_APP_CONTINUE;
     }
@@ -120,7 +118,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                 state->trigger_context_menu = true;
             else if (event->button.button == SDL_BUTTON_MIDDLE) {
                 state->pause();
-                gui.show_noti(state->is_paused ? "Paused" : "Resumed");
+                gui.show_noti(state->video.is_paused ? "Paused" : "Resumed");
             }
             break;
 
@@ -219,7 +217,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
                 case SDLK_SPACE:
                     state->pause();
-                    gui.show_noti(state->is_paused ? "Paused" : "Resumed");
+                    gui.show_noti(state->video.is_paused ? "Paused" : "Resumed");
                     break;
 
                 case SDLK_T:
@@ -227,7 +225,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     break;
 
                 case SDLK_HOME:
-                    state->seek(state->video.get_start_time(), true);
+                    state->seek(state->video.get_start_time());
                     break;
             }
             break;
