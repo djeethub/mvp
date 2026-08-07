@@ -198,7 +198,7 @@ public:
     bool is_loop = true;
     bool is_paused = false;
     bool is_seeking = false;
-    double seek_time;
+    std::atomic<double> shared_tick;
 
     bool open(const std::string &filename)
     {
@@ -446,7 +446,7 @@ public:
 
     bool seek(double ts) {
         if (seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0) {
-            set_seeking(true, ts);
+            set_seeking(true);
             last_video_time = ts;
             last_audio_time = ts;
             return true;
@@ -454,15 +454,13 @@ public:
             return false;
     }
 
-    void set_seeking(bool set, double ts) {
+    void set_seeking(bool set) {
         if (set) {
             is_seeking = true;
-            seek_time = ts;
             set_skip(AVDISCARD_NONREF, AVDISCARD_ALL, AVDISCARD_ALL);
 //            clear_frame_buffers();
         } else {
             is_seeking = false;
-            seek_time = ts;
             set_skip(AVDISCARD_DEFAULT, AVDISCARD_DEFAULT, AVDISCARD_DEFAULT);
         }
     }    
@@ -562,9 +560,7 @@ public:
                     {
                         if (frame->pts != AV_NOPTS_VALUE) {
                             if (is_seeking) {
-                                play_time = last_audio_time;
-                                set_seeking(false, play_time);
-                                set_play_time(play_time);
+                                set_seeking(false);
                             }
                             auto new_frame = frame_alloc();
                             av_frame_move_ref(new_frame, frame);
@@ -584,9 +580,7 @@ public:
                             last_video_time = frame->pts * get_video_time_base();
                             if (!is_seeking || last_video_time >= play_time) {
                                 if (is_seeking) {
-                                    play_time = last_video_time;
-                                    set_seeking(false, seek_time);
-                                    set_play_time(play_time);
+                                    set_seeking(false);
                                 }
                                 auto new_frame = frame_alloc();
                                 if (frame->format == AV_PIX_FMT_VAAPI) {
@@ -641,7 +635,7 @@ public:
     double time_next_frame() {
         if (is_paused && !is_seeking)
             return LARGE_INTERVAL;
-        double play_time = is_seeking ? seek_time : get_play_time();
+        double play_time = get_play_time();
         if (is_video()) {
             auto rlt = read_next_frame(play_time, true);
 //            SDL_Log("%i %i\n", audio_frame_queue.size_approx(), video_frame_queue.size_approx());
@@ -706,13 +700,8 @@ public:
         return static_cast<double>(SDL_GetPerformanceCounter()) / SDL_GetPerformanceFrequency();
     }
 
-    void set_play_time(double play_time)
-    {
-        tick_diff = get_ticks() - play_time;
-    }
-
     double get_play_time() const {
-        return is_paused ? seek_time : (get_ticks() - tick_diff);
+        return get_ticks() - shared_tick.load(std::memory_order_acquire);
     }
 
 private:

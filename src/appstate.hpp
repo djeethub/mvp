@@ -68,7 +68,6 @@ struct AppState {
     AppGpu gpu;
     std::atomic<AVFrame *> video_frame;
     ff::AudioBuffer audio_buf;
-    double tick_diff = 0;
     SDL_AudioDeviceID audio_device_id = 0;
     std::thread thread;
     double seek_time;
@@ -264,7 +263,7 @@ struct AppState {
                         audio_stream.reset(stream);
                         audio_device_id = dev_id;
                         SDL_BindAudioStream(dev_id, audio_stream.get());
-    //                    SDL_ResumeAudioDevice(dev_id);
+                        SDL_ResumeAudioDevice(dev_id);
                     }
                     else
                         SDL_Log("Audio Error: %s", SDL_GetError());
@@ -295,12 +294,13 @@ struct AppState {
                 ass.init(target_w, target_h, subtitle_ctx, video.get_format_ctx(), window.get());
             }
 
-            seek_time = video.seek_time = video.get_start_time();
+            seek_time = video.get_start_time();
             video.is_seeking = true;
             is_seeking = true;
             video.status = ff::Reset;
             status = Reset;
             video.read_next_frame(seek_time);
+            video.shared_tick.store(get_ticks() - seek_time, std::memory_order_relaxed);
         }
         cv.notify_one();
         video.cv.notify_one();
@@ -348,11 +348,13 @@ struct AppState {
             if (video.seek(ts))
             {
                 clear_frame_buffers();
+                seek_time = ts;
                 video.is_seeking = true;
                 is_seeking = true;
                 video.status = ff::Reset;
                 status = Reset;
                 video.read_next_frame(ts);
+                video.shared_tick.store(get_ticks() - ts, std::memory_order_relaxed);
             } else
                 return false;
         }
@@ -439,7 +441,7 @@ struct AppState {
             {
                 AVFrame *frame = *pp;
                 auto frame_time = frame->pts * video.get_video_time_base();
-                if (is_seeking) {
+                if (is_seeking && !video.is_audio()) {
                     play_time = frame_time;
                     is_seeking = false;
                     set_play_time(play_time);
@@ -504,11 +506,11 @@ struct AppState {
 
     void set_play_time(double play_time)
     {
-        tick_diff = get_ticks() - play_time;
+        video.shared_tick.store(get_ticks() - play_time, std::memory_order_release);
     }
 
     double get_play_time() const {
-        return video.is_paused ? seek_time : (get_ticks() - tick_diff);
+        return video.is_paused ? seek_time : (get_ticks() - video.shared_tick.load(std::memory_order_relaxed));
     }
 
     void resize_window(float window_scale = 1.0) {
@@ -565,8 +567,7 @@ struct AppState {
                 video.is_paused = false;
                 video.status = ff::Reset;
                 status = Reset;
-                video.set_play_time(seek_time);
-                set_play_time(seek_time);
+                video.shared_tick.store(get_ticks() - seek_time, std::memory_order_relaxed);
             } else {
                 SDL_PauseAudioStreamDevice(audio_stream.get());
                 seek_time = get_play_time();
