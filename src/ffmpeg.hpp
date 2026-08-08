@@ -177,14 +177,13 @@ public:
     auto get_video_time_base() const { return video_time_base; }
     auto get_audio_time_base() const { return audio_time_base; }
     auto get_subtitle_time_base() const { return subtitle_time_base; }
-    auto get_audio_channels() const { return audio_codec_ctx->ch_layout.nb_channels; }
-    auto get_audio_sample_rate() const { return audio_codec_ctx->sample_rate; }
     auto get_subtitle_tracks() const { return subtitle_list; }
     auto get_audio_tracks() const { return audio_list; }
     auto get_subtitle_index() const { return subtitle_stream_idx; }
     auto get_audio_index() const { return audio_stream_index; }
     auto get_subtitle_ctx() const { return subtitle_codec_ctx; }
     auto get_video_ctx() const { return video_codec_ctx; }
+    auto get_audio_ctx() const { return audio_codec_ctx; }
     auto get_format_ctx() const { return format_ctx; }
     auto is_audio() const { return audio_codec_ctx != nullptr; }
     auto is_video() const { return video_codec_ctx != nullptr; }
@@ -410,7 +409,6 @@ public:
         subtitle_stream_idx = -1;
         subtitle_list.clear();
         audio_list.clear();
-        is_loopable = false;
         is_seeking = false;
         last_video_time = 0.0;
         last_audio_time = 0.0;
@@ -554,7 +552,7 @@ public:
             if (packet->stream_index == audio_stream_index)
             {
                 last_audio_time = packet->pts * get_audio_time_base();
-                if ((!is_seeking || last_audio_time >= play_time) && avcodec_send_packet(audio_codec_ctx, packet) >= 0)
+                if (last_audio_time >= play_time && avcodec_send_packet(audio_codec_ctx, packet) >= 0)
                 {
                     while (avcodec_receive_frame(audio_codec_ctx, frame) >= 0)
                     {
@@ -578,7 +576,7 @@ public:
                     {
                         if (frame->pts != AV_NOPTS_VALUE) {
                             last_video_time = frame->pts * get_video_time_base();
-                            if (!is_seeking || last_video_time >= play_time) {
+                            if (last_video_time >= play_time) {
                                 if (is_seeking) {
                                     set_seeking(false);
                                 }
@@ -636,34 +634,12 @@ public:
         if (is_paused && !is_seeking)
             return LARGE_INTERVAL;
         double play_time = get_play_time();
-        if (is_video()) {
-            auto rlt = read_next_frame(play_time, true);
+        auto rlt = read_next_frame(play_time, true);
 //            SDL_Log("%i %i\n", audio_frame_queue.size_approx(), video_frame_queue.size_approx());
-            if (rlt < 0) {
-                if (rlt == AVERROR_EOF) {
-                    if (is_loopable && is_loop) {
-                        if (seek(get_start_time())) {
-                            return 0.0;
-                        }
-                    }
-                }
-                return LARGE_INTERVAL;
-            }
-            if (is_seeking)
-                return 0.0;
-            return 0.1;
-        } else {
-            auto rlt = read_next_frame(play_time, true);
-            if (rlt < 0) {
-                if (rlt == AVERROR_EOF && is_loop) {
-                    if (seek(get_start_time())) {
-                        return 0.0;
-                    }
-                }
-                return LARGE_INTERVAL;
-            }
-            return 0.1;
+        if (rlt < 0) {
+            return LARGE_INTERVAL;
         }
+        return 0.1;
     }
 
     static void thread_worker(VideoFile *video)

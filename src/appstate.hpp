@@ -80,6 +80,8 @@ struct AppState {
     static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif" };
     MediaMode media_mode;
     bool is_seeking = false;
+    bool is_loopable = false;
+    SDL_AudioSpec audio_spec;
 
     AppState() {
         auto n = SDL_RegisterEvents(NUM_USEREVENT);
@@ -137,6 +139,7 @@ struct AppState {
         video.close();
         clear_frame_buffers();
         texture.reset();
+        is_loopable = false;
     }
 
     bool shutdown() {
@@ -248,8 +251,33 @@ struct AppState {
                     int count = 0;
                     auto *devices = SDL_GetAudioPlaybackDevices(&count);
                     if (count > 0) {
-                        SDL_AudioSpec src_spec = { SDL_AUDIO_F32, video.get_audio_channels(), video.get_audio_sample_rate() };
-                        auto stream = SDL_CreateAudioStream(&src_spec, NULL);
+                        SDL_AudioFormat sdl_fmt = SDL_AUDIO_UNKNOWN;
+                        auto audio_ctx = video.get_audio_ctx();
+                        switch (audio_ctx->sample_fmt) {
+                            case AV_SAMPLE_FMT_U8:
+                            case AV_SAMPLE_FMT_U8P:
+                                sdl_fmt = SDL_AUDIO_U8;
+                                break;
+                            case AV_SAMPLE_FMT_S16:
+                            case AV_SAMPLE_FMT_S16P:
+                                sdl_fmt = SDL_AUDIO_S16;
+                                break;
+                            case AV_SAMPLE_FMT_S32:
+                            case AV_SAMPLE_FMT_S32P:
+                                sdl_fmt = SDL_AUDIO_S32;
+                                break;
+                            case AV_SAMPLE_FMT_FLT:
+                            case AV_SAMPLE_FMT_FLTP:
+                                sdl_fmt = SDL_AUDIO_F32;
+                                break;
+                            case AV_SAMPLE_FMT_DBL:
+                            case AV_SAMPLE_FMT_DBLP:
+                            case AV_SAMPLE_FMT_S64:
+                            case AV_SAMPLE_FMT_S64P:
+                                sdl_fmt = SDL_AUDIO_UNKNOWN;
+                        }
+                        audio_spec = { sdl_fmt, audio_ctx->ch_layout.nb_channels, audio_ctx->sample_rate };
+                        auto stream = SDL_CreateAudioStream(&audio_spec, NULL);
                         if (!stream) {
                             SDL_Log("Failed to create audio stream: %s", SDL_GetError());
                             return false;
@@ -268,6 +296,7 @@ struct AppState {
                     else
                         SDL_Log("Audio Error: %s", SDL_GetError());
                     SDL_free(devices);
+                    is_loopable = true;
                 }
             }
 
@@ -340,6 +369,26 @@ struct AppState {
         }
 
         return line; // Fallback if string is unexpected or malformed
+    }
+
+    bool loop() {
+        {
+            auto ts = video.get_start_time();
+            std::lock_guard<std::mutex> lock(video.mutex);
+            if (video.seek(ts))
+            {
+                clear_frame_buffers();
+                seek_time = ts;
+                video.is_seeking = true;
+                is_seeking = true;
+                video.status = ff::Reset;
+                video.read_next_frame(ts);
+                video.shared_tick.store(get_ticks() - ts, std::memory_order_relaxed);
+            } else
+                return false;
+        }
+        video.cv.notify_one();
+        return true;
     }
 
     bool seek(double ts) {
@@ -453,6 +502,7 @@ struct AppState {
                     video.video_frame_queue.pop();
                 } else {
                     ret = frame_time;
+                    is_loopable = true;
                     break;
                 }
             }
@@ -474,6 +524,23 @@ struct AppState {
         return ret;
     }
 
+    double time_from_audio_bytes(int bytes) {
+        int bps;
+        switch (audio_spec.format) {
+            case SDL_AUDIO_U8:
+                bps = 1;
+                break;
+            case SDL_AUDIO_S16:
+                bps = 2;
+                break;
+            case SDL_AUDIO_S32:
+            case SDL_AUDIO_F32:
+            default:
+                bps = 4;
+        }
+        return (double) bytes / (audio_spec.freq * audio_spec.channels * bps);
+    }
+
     double time_next_frame()
     {
         if (video.is_paused)
@@ -482,8 +549,16 @@ struct AppState {
         auto frame_time = check_next_frame(play_time);
         if (frame_time > 0.0)
             return frame_time - get_play_time();
-        else if (audio_stream)
-            return 0.2;
+        else if (is_loopable) {
+            if (audio_stream) {
+                auto bytes = SDL_GetAudioStreamQueued(audio_stream.get());
+                frame_time = time_from_audio_bytes(bytes);
+                if (frame_time >= 0.02)
+                    return SDL_min(frame_time, 0.1);
+            }
+            if (loop())
+                return 0.0;
+        }
         return LARGE_INTERVAL;
     }
     
