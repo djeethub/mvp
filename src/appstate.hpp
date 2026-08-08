@@ -21,10 +21,6 @@
 #include "twowayqueue.hpp"
 #include "gpu.hpp"
 
-// Define a unique event ID for our frame ticker
-Uint32 USEREVENT_NEXT_FRAME;
-Uint32 USEREVENT_SUBTITLE_ASS;
-const auto NUM_USEREVENT = 2;
 const auto LARGE_INTERVAL = 777777.7;
 
 namespace fs = std::filesystem;
@@ -82,12 +78,6 @@ struct AppState {
     bool is_seeking = false;
     bool is_loopable = false;
     SDL_AudioSpec audio_spec;
-
-    AppState() {
-        auto n = SDL_RegisterEvents(NUM_USEREVENT);
-        USEREVENT_NEXT_FRAME = n++;
-        USEREVENT_SUBTITLE_ASS = n++;
-    }
 
     ~AppState()
     {
@@ -460,9 +450,7 @@ struct AppState {
         return -1;
     }
 
-    double check_next_frame(double play_time) {
-        double ret = 0.0;
-
+    void check_audio_frame(double play_time) {
         if (video.is_audio()) {
             AVFrame *frame;
             while (video.audio_frame_queue.try_dequeue(frame))
@@ -484,6 +472,11 @@ struct AppState {
                 ff::frame_recycle(frame);
             }
         }
+    }
+
+    double check_video_frame(double play_time) {
+        double ret = 0.0;
+
         if (video.is_video()) {
             AVFrame *frame_to_display = nullptr;
             while (auto pp = video.video_frame_queue.peek())
@@ -510,18 +503,29 @@ struct AppState {
             {
                 if (ret == 0.0)
                     ret = (frame_to_display->pts + frame_to_display->duration) * video.get_video_time_base();
-                auto duration = frame_to_display->duration;
                 auto old_frame = video_frame.exchange(frame_to_display, std::memory_order_release);
-                ff::frame_recycle(old_frame);
 
                 SDL_Event event;
                 SDL_zero(event);
-                event.type = USEREVENT_NEXT_FRAME;
+                event.type = SDL_EVENT_FIRST;
                 SDL_PushEvent(&event);
+
+                ff::frame_recycle(old_frame);
             }
         }
 
         return ret;
+    }
+
+    double check_next_frame(double play_time) {
+        if (is_seeking) {
+            check_audio_frame(play_time);
+            return check_video_frame(play_time);
+        } else {
+            auto ret = check_video_frame(play_time);
+            check_audio_frame(play_time);
+            return ret;
+        }
     }
 
     double time_from_audio_bytes(int bytes) {
@@ -635,10 +639,12 @@ struct AppState {
         SDL_SetWindowPosition(window.get(), new_x, new_y);
     }
 
-    void pause() {
+    void pause(bool pause_only = false) {
         {
             std::scoped_lock lock(video.mutex, mutex);
             if (video.is_paused) {
+                if (pause_only)
+                    return;
                 video.is_paused = false;
                 video.status = ff::Reset;
                 status = Reset;

@@ -295,6 +295,11 @@ class AppGui {
                         SDL_PushEvent(&event);
                     }
                 }
+                if (ImGui::MenuItem("Minimize", "F9", false, true))
+                {
+                    SDL_MinimizeWindow(state->window.get());
+                    state->pause(true);
+                }
                 if (ImGui::BeginMenu("Audio"))
                 {
                     auto idx = state->video.get_audio_index();

@@ -537,7 +537,7 @@ public:
         data->text = text;
         data->pts = packet->pts * get_subtitle_time_base();
         data->duration = packet->duration * get_subtitle_time_base();
-        sub_queue.enqueue(std::move(data));
+        sub_queue.enqueue(data);
     }
 
     int read_next_frame(double play_time, bool preload = false) {
@@ -546,8 +546,6 @@ public:
 
         while ((is_video() && last_video_time < target_play_time) || (is_audio() && last_audio_time < target_play_time)) {
             read_result = av_read_frame(format_ctx, packet);
-            if (read_result < 0 && read_result != AVERROR_EOF)
-                return read_result;
 
             if (packet->stream_index == audio_stream_index)
             {
@@ -624,6 +622,8 @@ public:
             av_packet_unref(packet);
 
             if (!preload && last_video_time > play_time)
+                break;
+            if (read_result < 0)
                 break;
         }
 

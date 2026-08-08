@@ -44,7 +44,8 @@ public:
     }
 
     T peek() {
-        return *data_queue.peek();
+        T *pp = data_queue.peek();
+        return (pp != nullptr) ? *pp : nullptr;
     }
 
     bool recycle(T const& t) {
@@ -70,6 +71,6 @@ public:
     }
 
     bool empty() {
-        return size() == 0;
+        return data_queue.peek() == nullptr;
     }
 };

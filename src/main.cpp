@@ -65,34 +65,6 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     auto *state = static_cast<AppState*>(appstate);
     ImGui_ImplSDL3_ProcessEvent(event);
 
-    if (event->type == USEREVENT_NEXT_FRAME) {
-        auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
-        if (video_frame) {
-//            SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
-/*            state->create_texture(video_frame);
-            switch (get_update_kind(state->texture->format)) {
-                case SDL_UPDATE_NV:
-                    SDL_UpdateNVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1]);
-                    break;
-                case SDL_UPDATE_YUV:
-                    SDL_UpdateYUVTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0], video_frame->data[1], video_frame->linesize[1], video_frame->data[2], video_frame->linesize[2]);
-                    break;
-                default:
-                    SDL_UpdateTexture(state->texture.get(), nullptr, video_frame->data[0], video_frame->linesize[0]);
-                    break;
-            }*/
-            state->gpu.set_frame(video_frame, state->get_play_time());
-//            state->gpu.render();
-        }
-        ff::Subtitle *subtitle;
-        while (state->video.sub_queue.dequeue(subtitle)) {
-            ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
-//                printf("subtitle: %s, %f, %f\n", subtitle->text.c_str(), subtitle->pts, subtitle->duration);
-            state->video.sub_queue.recycle(subtitle);
-        }
-        return SDL_APP_CONTINUE;
-    }
-
     switch (event->type) {
         case SDL_EVENT_QUIT:
             return SDL_APP_SUCCESS;
@@ -227,6 +199,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                 case SDLK_HOME:
                     state->seek(state->video.get_start_time());
                     break;
+
+                case SDLK_F9:
+                    SDL_MinimizeWindow(state->window.get());
+                    state->pause(true);
+                    break;
             }
             break;
 
@@ -251,6 +228,17 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 SDL_AppResult SDL_AppIterate(void *appstate) {
     auto *state = static_cast<AppState*>(appstate);
 
+    auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
+    if (video_frame) {
+        ff::Subtitle *subtitle;
+        while (state->video.sub_queue.dequeue(subtitle)) {
+            ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
+//                printf("subtitle: %s, %f, %f\n", subtitle->text.c_str(), subtitle->pts, subtitle->duration);
+            state->video.sub_queue.recycle(subtitle);
+        }
+        state->gpu.set_frame(video_frame, video_frame->pts * state->video.get_video_time_base());
+    }    
+
     auto app_result = gui.draw();
     if (app_result != SDL_APP_CONTINUE)
         return app_result;
@@ -266,6 +254,8 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
         ass.shutdown();
         gui.shutdown();
 //        SDL_WaitForGPUIdle(state->gpu.get_device());
+        auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
+        av_frame_free(&video_frame);
         delete state;
     }
 }
