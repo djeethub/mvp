@@ -194,10 +194,10 @@ public:
     std::mutex mutex;
     std::condition_variable cv;
     Status status = Play;
-    bool is_loop = true;
     bool is_paused = false;
     bool is_seeking = false;
     std::atomic<double> shared_tick;
+    std::atomic<bool> is_eof;
 
     bool open(const std::string &filename)
     {
@@ -217,6 +217,7 @@ public:
         duration = static_cast<double>(format_ctx->duration) / AV_TIME_BASE;
         if (!packet) packet = av_packet_alloc();
         if (!frame) frame = frame_pool.alloc();
+        is_eof.store(false, std::memory_order_release);
         return true;
     }
 
@@ -438,6 +439,7 @@ public:
                 avcodec_flush_buffers(video_codec_ctx);
             if (subtitle_codec_ctx)
                 avcodec_flush_buffers(subtitle_codec_ctx);
+            is_eof.store(false, std::memory_order_release);
         }
         return seek_result;
     }
@@ -623,8 +625,10 @@ public:
 
             if (!preload && last_video_time > play_time)
                 break;
-            if (read_result < 0)
+            if (read_result < 0) {
+                is_eof.store(true, std::memory_order_release);
                 break;
+            }
         }
 
         return read_result;
@@ -702,7 +706,6 @@ private:
     double audio_time_base = 0.0;
     double subtitle_time_base = 0.0;
     std::thread thread;
-    bool is_loopable;
     double tick_diff;
     double last_video_time;
     double last_audio_time;

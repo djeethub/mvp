@@ -228,16 +228,20 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 SDL_AppResult SDL_AppIterate(void *appstate) {
     auto *state = static_cast<AppState*>(appstate);
 
-    auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
-    if (video_frame) {
-        ff::Subtitle *subtitle;
-        while (state->video.sub_queue.dequeue(subtitle)) {
-            ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
-//                printf("subtitle: %s, %f, %f\n", subtitle->text.c_str(), subtitle->pts, subtitle->duration);
-            state->video.sub_queue.recycle(subtitle);
-        }
-        state->gpu.set_frame(video_frame, video_frame->pts * state->video.get_video_time_base());
-    }    
+    if (!state->video.is_paused) {
+        auto play_time = state->get_play_time();
+        state->check_audio_frame(play_time);
+        auto video_frame = state->check_video_frame(play_time);
+        if (video_frame) {
+            ff::Subtitle *subtitle;
+            while (state->video.sub_queue.dequeue(subtitle)) {
+                ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
+    //                printf("subtitle: %s, %f, %f\n", subtitle->text.c_str(), subtitle->pts, subtitle->duration);
+                state->video.sub_queue.recycle(subtitle);
+            }
+            state->gpu.set_frame(video_frame, play_time);
+        }    
+    }
 
     auto app_result = gui.draw();
     if (app_result != SDL_APP_CONTINUE)
@@ -253,9 +257,7 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
         state->shutdown();
         ass.shutdown();
         gui.shutdown();
-//        SDL_WaitForGPUIdle(state->gpu.get_device());
-        auto video_frame = state->video_frame.exchange(nullptr, std::memory_order_acquire);
-        av_frame_free(&video_frame);
+        SDL_WaitForGPUIdle(state->gpu.get_device());
         delete state;
     }
 }

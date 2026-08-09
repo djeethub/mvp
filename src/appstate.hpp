@@ -34,7 +34,6 @@ enum Status {
 
 using WindowPtr = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
 using RendererPtr = std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)>;
-using TexturePtr = std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)>;
 using AudioStream = std::unique_ptr<SDL_AudioStream, decltype(&SDL_DestroyAudioStream)>;
 
 enum MediaMode {
@@ -57,18 +56,12 @@ struct AppState {
 
     WindowPtr window{nullptr, SDL_DestroyWindow};
     RendererPtr renderer{nullptr, SDL_DestroyRenderer};
-    TexturePtr texture{nullptr, SDL_DestroyTexture};
     AudioStream audio_stream{nullptr, SDL_DestroyAudioStream};
 
     ff::VideoFile video;
     AppGpu gpu;
-    std::atomic<AVFrame *> video_frame;
-    ff::AudioBuffer audio_buf;
     SDL_AudioDeviceID audio_device_id = 0;
-    std::thread thread;
     double seek_time;
-    std::mutex mutex;
-    std::condition_variable cv;
     Status status = Running;
     std::vector<ff::ChapterData> chapter_list;
     std::future<DirData *> dir_future;
@@ -76,13 +69,9 @@ struct AppState {
     static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif" };
     MediaMode media_mode;
     bool is_seeking = false;
-    bool is_loopable = false;
+    bool is_loop = true;
     SDL_AudioSpec audio_spec;
-
-    ~AppState()
-    {
-        reset_runtime_state();
-    }
+    bool is_loopable;
 
     static MediaMode is_supported_format(const fs::path &p, MediaMode mode = None) {
         if (!p.has_extension()) return None;
@@ -121,27 +110,19 @@ struct AppState {
     }
 
     void reset_runtime_state() {
+        video.close();
+        audio_stream.reset();
         if (audio_device_id != 0) {
             SDL_CloseAudioDevice(audio_device_id);
             audio_device_id = 0;
         }
-        audio_stream.reset();
-        video.close();
         clear_frame_buffers();
-        texture.reset();
         is_loopable = false;
     }
 
     bool shutdown() {
         video.stop_thead();
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            status = Quit;
-        }
-        cv.notify_one();
-        if (thread.joinable())
-            thread.join();
-        SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+        reset_runtime_state();
         return true;
     }
 
@@ -227,7 +208,7 @@ struct AppState {
 
     bool open_video(const std::string& file_path) {
         {
-            std::scoped_lock lock(video.mutex, mutex);
+            std::lock_guard lock(video.mutex);
             reset_runtime_state();
 
             if (!video.open(file_path)) {
@@ -282,11 +263,11 @@ struct AppState {
                         audio_device_id = dev_id;
                         SDL_BindAudioStream(dev_id, audio_stream.get());
                         SDL_ResumeAudioDevice(dev_id);
+                        is_loopable = true;
                     }
                     else
                         SDL_Log("Audio Error: %s", SDL_GetError());
                     SDL_free(devices);
-                    is_loopable = true;
                 }
             }
 
@@ -318,16 +299,12 @@ struct AppState {
             is_seeking = true;
             video.status = ff::Reset;
             status = Reset;
-            video.read_next_frame(seek_time);
+//            video.read_next_frame(seek_time);
             video.shared_tick.store(get_ticks() - seek_time, std::memory_order_relaxed);
         }
-        cv.notify_one();
         video.cv.notify_one();
-        if (!thread.joinable()) {
-            thread = std::thread(thread_worker, this);
-            pthread_setname_np(thread.native_handle(), "timer");
-        }
         video.start_thread();
+        set_video_play(true);
         return true;
     }
 
@@ -361,29 +338,9 @@ struct AppState {
         return line; // Fallback if string is unexpected or malformed
     }
 
-    bool loop() {
-        {
-            auto ts = video.get_start_time();
-            std::lock_guard<std::mutex> lock(video.mutex);
-            if (video.seek(ts))
-            {
-                clear_frame_buffers();
-                seek_time = ts;
-                video.is_seeking = true;
-                is_seeking = true;
-                video.status = ff::Reset;
-                video.read_next_frame(ts);
-                video.shared_tick.store(get_ticks() - ts, std::memory_order_relaxed);
-            } else
-                return false;
-        }
-        video.cv.notify_one();
-        return true;
-    }
-
     bool seek(double ts) {
         {
-            std::scoped_lock lock(video.mutex, mutex);
+            std::lock_guard lock(video.mutex);
             if (video.seek(ts))
             {
                 clear_frame_buffers();
@@ -392,12 +349,11 @@ struct AppState {
                 is_seeking = true;
                 video.status = ff::Reset;
                 status = Reset;
-                video.read_next_frame(ts);
+//                video.read_next_frame(ts);
                 video.shared_tick.store(get_ticks() - ts, std::memory_order_relaxed);
             } else
                 return false;
         }
-        cv.notify_one();
         video.cv.notify_one();
         return true;
     }
@@ -451,132 +407,58 @@ struct AppState {
     }
 
     void check_audio_frame(double play_time) {
-        if (video.is_audio()) {
-            AVFrame *frame;
-            while (video.audio_frame_queue.try_dequeue(frame))
-            {
-                auto frame_time = frame->pts * video.get_audio_time_base();
-                if (is_seeking) {
-                    play_time = frame_time;
-                    is_seeking = false;
-                    set_play_time(play_time);
-                }
-                if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frame->format))) {
-                    // Perfect for FLTP (extracts from any standard video file container)
-                    SDL_PutAudioStreamPlanarData(audio_stream.get(), (const void * const *)frame->data, frame->ch_layout.nb_channels, frame->nb_samples);
-                } else {
-                    // Perfect for packed/interleaved layouts (like FLT, S16, S32)
-                    int size_in_bytes = frame->nb_samples * frame->ch_layout.nb_channels * av_get_bytes_per_sample(static_cast<AVSampleFormat>(frame->format));
-                    SDL_PutAudioStreamData(audio_stream.get(), frame->data[0], size_in_bytes);
-                }
-                ff::frame_recycle(frame);
-            }
-        }
-    }
-
-    double check_video_frame(double play_time) {
-        double ret = 0.0;
-
-        if (video.is_video()) {
-            AVFrame *frame_to_display = nullptr;
-            while (auto pp = video.video_frame_queue.peek())
-            {
-                AVFrame *frame = *pp;
-                auto frame_time = frame->pts * video.get_video_time_base();
-                if (is_seeking && !video.is_audio()) {
-                    play_time = frame_time;
-                    is_seeking = false;
-                    set_play_time(play_time);
-                }
-                if (frame_time <= play_time) {
-                    if (frame_to_display)
-                        ff::frame_recycle(frame_to_display);
-                    frame_to_display = frame;
-                    video.video_frame_queue.pop();
-                } else {
-                    ret = frame_time;
-                    is_loopable = true;
-                    break;
-                }
-            }
-            if (frame_to_display)
-            {
-                if (ret == 0.0)
-                    ret = (frame_to_display->pts + frame_to_display->duration) * video.get_video_time_base();
-                auto old_frame = video_frame.exchange(frame_to_display, std::memory_order_release);
-
-                SDL_Event event;
-                SDL_zero(event);
-                event.type = SDL_EVENT_FIRST;
-                SDL_PushEvent(&event);
-
-                ff::frame_recycle(old_frame);
-            }
-        }
-
-        return ret;
-    }
-
-    double check_next_frame(double play_time) {
-        if (is_seeking) {
-            check_audio_frame(play_time);
-            return check_video_frame(play_time);
-        } else {
-            auto ret = check_video_frame(play_time);
-            check_audio_frame(play_time);
-            return ret;
-        }
-    }
-
-    double time_from_audio_bytes(int bytes) {
-        int bps;
-        switch (audio_spec.format) {
-            case SDL_AUDIO_U8:
-                bps = 1;
-                break;
-            case SDL_AUDIO_S16:
-                bps = 2;
-                break;
-            case SDL_AUDIO_S32:
-            case SDL_AUDIO_F32:
-            default:
-                bps = 4;
-        }
-        return (double) bytes / (audio_spec.freq * audio_spec.channels * bps);
-    }
-
-    double time_next_frame()
-    {
-        if (video.is_paused)
-            return LARGE_INTERVAL;
-        double play_time = get_play_time();
-        auto frame_time = check_next_frame(play_time);
-        if (frame_time > 0.0)
-            return frame_time - get_play_time();
-        else if (is_loopable) {
-            if (audio_stream) {
-                auto bytes = SDL_GetAudioStreamQueued(audio_stream.get());
-                frame_time = time_from_audio_bytes(bytes);
-                if (frame_time >= 0.02)
-                    return SDL_min(frame_time, 0.1);
-            }
-            if (loop())
-                return 0.0;
-        }
-        return LARGE_INTERVAL;
-    }
-    
-    static void thread_worker(AppState *state)
-    {
-        while (true)
+        AVFrame *frame;
+        while (video.audio_frame_queue.try_dequeue(frame))
         {
-            std::unique_lock<std::mutex> lock(state->mutex);
-            if (state->status == Quit)
-                break;
-            state->status = Running;
-            double interval = state->time_next_frame();
-            state->cv.wait_for(lock, std::chrono::microseconds(static_cast<int64_t>(interval * 1000000)), [state]{ return state->status != Running; });
+            auto frame_time = frame->pts * video.get_audio_time_base();
+            if (is_seeking) {
+                play_time = frame_time;
+                is_seeking = false;
+                set_play_time(play_time);
+            }
+            if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frame->format))) {
+                // Perfect for FLTP (extracts from any standard video file container)
+                SDL_PutAudioStreamPlanarData(audio_stream.get(), (const void * const *)frame->data, frame->ch_layout.nb_channels, frame->nb_samples);
+            } else {
+                // Perfect for packed/interleaved layouts (like FLT, S16, S32)
+                int size_in_bytes = frame->nb_samples * frame->ch_layout.nb_channels * av_get_bytes_per_sample(static_cast<AVSampleFormat>(frame->format));
+                SDL_PutAudioStreamData(audio_stream.get(), frame->data[0], size_in_bytes);
+            }
+            ff::frame_recycle(frame);
         }
+    }
+
+    AVFrame *check_video_frame(double play_time) {
+        AVFrame *frame = nullptr;
+        AVFrame *frame_to_display = nullptr;
+        while (auto pp = video.video_frame_queue.peek())
+        {
+            frame = *pp;
+            auto frame_time = frame->pts * video.get_video_time_base();
+            if (is_seeking && !video.is_audio()) {
+                play_time = frame_time;
+                is_seeking = false;
+                set_play_time(play_time);
+            }
+            if (frame_time <= play_time) {
+                if (frame_to_display)
+                    ff::frame_recycle(frame_to_display);
+                frame_to_display = frame;
+                video.video_frame_queue.pop();
+            } else {
+                is_loopable = true;
+                break;
+            }
+        }
+        if (!frame && video.is_eof.load(std::memory_order_acquire)) {
+            if (is_loopable) {
+                if (seek(video.get_start_time())) {
+                    return nullptr;
+                }
+            }
+            set_video_play(false);
+        }
+        return frame_to_display;
     }
 
     static double get_ticks() {
@@ -589,7 +471,7 @@ struct AppState {
     }
 
     double get_play_time() const {
-        return video.is_paused ? seek_time : (get_ticks() - video.shared_tick.load(std::memory_order_relaxed));
+        return (is_seeking || video.is_paused) ? seek_time : (get_ticks() - video.shared_tick.load(std::memory_order_relaxed));
     }
 
     void resize_window(float window_scale = 1.0) {
@@ -641,7 +523,7 @@ struct AppState {
 
     void pause(bool pause_only = false) {
         {
-            std::scoped_lock lock(video.mutex, mutex);
+            std::lock_guard lock(video.mutex);
             if (video.is_paused) {
                 if (pause_only)
                     return;
@@ -653,12 +535,13 @@ struct AppState {
                 SDL_PauseAudioStreamDevice(audio_stream.get());
                 seek_time = get_play_time();
                 video.is_paused = true;
+                set_video_play(false);
                 return;
             }
         }
-        cv.notify_one();
         video.cv.notify_one();
         SDL_ResumeAudioStreamDevice(audio_stream.get());
+        set_video_play(true);
     }
 
     auto get_file_name() {
@@ -666,7 +549,7 @@ struct AppState {
     }
 
     void select_subtitle(int idx) {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::lock_guard<std::mutex> lock(video.mutex);
         if (video.get_subtitle_index() != idx) {
             ass.flush();
             video.select_subtitle(idx);
@@ -674,11 +557,19 @@ struct AppState {
     }
 
     void select_audio(int idx) {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::lock_guard<std::mutex> lock(video.mutex);
         if (video.get_audio_index() != idx) {
 //            if (audio_stream)
 //                SDL_FlushAudioStream(audio_stream.get());
             video.select_audio(idx);
+        }
+    }
+
+    static void set_video_play(bool play) {
+        static bool is_playing = false;
+        if (is_playing != play) {
+            is_playing = play;
+            SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, play ? 0 : "waitevent");
         }
     }
 };
