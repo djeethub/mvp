@@ -196,6 +196,7 @@ public:
     Status status = Play;
     bool is_paused = false;
     bool is_seeking = false;
+    double seek_time;
     std::atomic<double> shared_tick;
     std::atomic<bool> is_eof;
 
@@ -681,7 +682,7 @@ public:
     }
 
     double get_play_time() const {
-        return get_ticks() - shared_tick.load(std::memory_order_acquire);
+        return is_seeking ? seek_time : (get_ticks() - shared_tick.load(std::memory_order_acquire));
     }
 
 private:

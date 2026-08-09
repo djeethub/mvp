@@ -400,7 +400,7 @@ private:
 	}
 
 	void draw_texture(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *pass) {
-		if (!frame || !pipeline)
+		if (!pipeline)
 			return;
 
 		SDL_BindGPUGraphicsPipeline(pass, pipeline);

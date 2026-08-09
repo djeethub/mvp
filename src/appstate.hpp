@@ -295,8 +295,9 @@ struct AppState {
             }
 
             seek_time = video.get_start_time();
-            video.is_seeking = true;
+            video.seek_time = seek_time;
             is_seeking = true;
+            video.is_seeking = true;
             video.status = ff::Reset;
             status = Reset;
 //            video.read_next_frame(seek_time);
@@ -345,6 +346,7 @@ struct AppState {
             {
                 clear_frame_buffers();
                 seek_time = ts;
+                video.seek_time = ts;
                 video.is_seeking = true;
                 is_seeking = true;
                 video.status = ff::Reset;
@@ -406,15 +408,14 @@ struct AppState {
         return -1;
     }
 
-    void check_audio_frame(double play_time) {
+    void check_audio_frame() {
         AVFrame *frame;
         while (video.audio_frame_queue.try_dequeue(frame))
         {
             auto frame_time = frame->pts * video.get_audio_time_base();
             if (is_seeking) {
-                play_time = frame_time;
                 is_seeking = false;
-                set_play_time(play_time);
+                set_play_time(frame_time);
             }
             if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frame->format))) {
                 // Perfect for FLTP (extracts from any standard video file container)

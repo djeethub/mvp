@@ -288,6 +288,10 @@ class AppGui {
                 {
                     state->pause();
                     show_noti(state->video.is_paused ? "Paused" : "Resumed");
+                    if (state->video.is_paused) {
+                        SDL_Event event{ .type = SDL_EVENT_FIRST };
+                        SDL_PushEvent(&event);
+                    }                        
                 }
                 if (ImGui::MenuItem("Minimize", "F9", false, true))
                 {

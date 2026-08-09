@@ -228,9 +228,13 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 SDL_AppResult SDL_AppIterate(void *appstate) {
     auto *state = static_cast<AppState*>(appstate);
 
+    auto app_result = gui.draw();
+    if (app_result != SDL_APP_CONTINUE)
+        return app_result;
+ 
     if (!state->video.is_paused) {
+        state->check_audio_frame();
         auto play_time = state->get_play_time();
-        state->check_audio_frame(play_time);
         auto video_frame = state->check_video_frame(play_time);
         if (video_frame) {
             ff::Subtitle *subtitle;
@@ -243,9 +247,6 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
         }    
     }
 
-    auto app_result = gui.draw();
-    if (app_result != SDL_APP_CONTINUE)
-        return app_result;
     state->gpu.render();
     return app_result;
 }
