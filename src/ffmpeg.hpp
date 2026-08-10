@@ -328,8 +328,7 @@ public:
         video_codec_ctx = avcodec_alloc_context3(codec);
         AVBufferRef *hw_device_ctx = nullptr;
         if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0) == 0) {
-            video_codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
-            av_buffer_unref(&hw_device_ctx);
+            video_codec_ctx->hw_device_ctx = hw_device_ctx;
         }
         video_codec_ctx->thread_count = 0;
         video_codec_ctx->thread_type = FF_THREAD_FRAME; // Or FF_THREAD_SLICE

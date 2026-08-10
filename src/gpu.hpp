@@ -219,7 +219,7 @@ private:
 			return false;
 
 		// Map and copy
-		void *mapped = SDL_MapGPUTransferBuffer(device, buf_data->buf, false);
+		void *mapped = SDL_MapGPUTransferBuffer(device, buf_data->buf, true);
 		if (!mapped)
 		{
 			xfer_pool.recycle(buf_data);
@@ -256,7 +256,7 @@ private:
 			.d = 1,
 		};
 
-		SDL_UploadToGPUTexture(pass, &src_info, &dst_region, false);
+		SDL_UploadToGPUTexture(pass, &src_info, &dst_region, true);
 
 		xfer_pool.in_use(buf_data);
 
