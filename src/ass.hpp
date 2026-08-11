@@ -54,15 +54,16 @@ public:
     }
 };
 
-struct Vertex {
-    float x, y;
-    float u, v;
-    float r, g, b, a;
-};
-
-struct AtlasRegion {
+struct alignas(16) AtlasRegion {
     float u0, v0; // Top-Left UV
     float u1, v1; // Bottom-Right UV
+};
+
+struct alignas(16) Vertex {
+    float x, y;
+    float w, h;
+    AtlasRegion uv;
+    float r, g, b, a;
 };
 
 struct Atlas {
@@ -105,8 +106,8 @@ struct Atlas {
         // Calculate normalized UV coordinates
         out_uv.u0 = (float)out_x / (float)w;
         out_uv.v0 = (float)out_y / (float)h;
-        out_uv.u1 = (float)(out_x + glyph_w) / (float)w;
-        out_uv.v1 = (float)(out_y + glyph_h) / (float)h;
+        out_uv.u1 = (float)glyph_w / (float)w;
+        out_uv.v1 = (float)glyph_h / (float)h;
 
         // Update shelf trackers
         current_x += alloc_w;
@@ -205,7 +206,7 @@ public:
 
         size *= 3;
         SDL_GPUBufferCreateInfo vb_info = {
-            .usage = SDL_GPU_BUFFERUSAGE_VERTEX,
+            .usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
             .size = size
         };
         auto buf = SDL_CreateGPUBuffer(device, &vb_info);
@@ -340,13 +341,13 @@ public:
         Uint32 size = atlas->vertices.size() * sizeof(Vertex);
         auto vert = vertex_pool.alloc(size);
         auto src = atlas->vertices.data();
-        void* v_map = SDL_MapGPUTransferBuffer(device, vert->xfer_buf, false);
+        void* v_map = SDL_MapGPUTransferBuffer(device, vert->xfer_buf, true);
         SDL_memcpy(v_map, src, size);
         SDL_UnmapGPUTransferBuffer(device, vert->xfer_buf);
 
         SDL_GPUTransferBufferLocation v_transfer = { vert->xfer_buf, 0 };
         SDL_GPUBufferRegion v_region = { vert->buf, 0, size };
-        SDL_UploadToGPUBuffer(pass, &v_transfer, &v_region, false);
+        SDL_UploadToGPUBuffer(pass, &v_transfer, &v_region, true);
         atlas->vert_buf = vert->buf;
         vertex_pool.in_use(vert);
     }
@@ -408,27 +409,18 @@ public:
             SDL_UploadToGPUTexture(pass, &transfer_info, &region, false);
             atlas->offset += img->w * img->h;
 
-            // --- B. Convert Screen Coordinates to Normalized Device Coordinates (NDC) ---
-            // libass gives pixel coordinates top-left (0,0) to bottom-right (screen_w, screen_h)
-            float x0 = (2.0f * img->dst_x / wnd_w) - 1.0f;
-            float y0 = 1.0f - (2.0f * img->dst_y / wnd_h);
-            float x1 = (2.0f * (img->dst_x + img->w) / wnd_w) - 1.0f;
-            float y1 = 1.0f - (2.0f * (img->dst_y + img->h) / wnd_h);
-
             uint32_t c = img->color;
             float r = ((c >> 24) & 0xFF) / 255.0f;
             float g = ((c >> 16) & 0xFF) / 255.0f;
             float b = ((c >> 8)  & 0xFF) / 255.0f;
             float a = (255 - (c & 0xFF)) / 255.0f;
 
-            atlas->vertices.push_back({ x0, y0, out_uv.u0, out_uv.v0, r, g, b, a });
-            atlas->vertices.push_back({ x1, y0, out_uv.u1, out_uv.v0, r, g, b, a });
-            atlas->vertices.push_back({ x0, y1, out_uv.u0, out_uv.v1, r, g, b, a });
-//            atlas->vertices.push_back({ x1, y1, out_uv.u1, out_uv.v1, r, g, b, a });
-
-            atlas->vertices.push_back({ x0, y1, out_uv.u0, out_uv.v1, r, g, b, a });
-            atlas->vertices.push_back({ x1, y0, out_uv.u1, out_uv.v0, r, g, b, a });
-            atlas->vertices.push_back({ x1, y1, out_uv.u1, out_uv.v1, r, g, b, a });
+            atlas->vertices.push_back({
+                2.0f * img->dst_x / wnd_w - 1.0f, 1.0f - 2.0f * img->dst_y / wnd_h,
+                2.0f * img->w / wnd_w, 2.0f * img->h / wnd_h,
+                out_uv,
+                r, g, b, a
+            });
         }
         if (atlas) {
             upload_vertices(pass, atlas);
@@ -444,11 +436,10 @@ public:
         SDL_BindGPUGraphicsPipeline(pass, pipeline);   // the one with blending enabled            
 
         for (auto data : list) {
+            SDL_BindGPUVertexStorageBuffers(pass, 0, &data->vert_buf, 1);
             SDL_GPUTextureSamplerBinding t_binding = { data->tex, sampler };
             SDL_BindGPUFragmentSamplers(pass, 0, &t_binding, 1);
-            SDL_GPUBufferBinding v_binding = { data->vert_buf, 0 };
-            SDL_BindGPUVertexBuffers(pass, 0, &v_binding, 1);
-            SDL_DrawGPUPrimitives(pass, data->vertices.size(), 1, 0, 0);
+            SDL_DrawGPUPrimitives(pass, data->vertices.size() * 6, 1, 0, 0);
         }
     }
 
@@ -464,62 +455,25 @@ private:
         if (pipeline)
             return true;
 
-        // 1. Configure Vertex Attributes matching GLSL layout(...) input locations
-        SDL_GPUVertexAttribute attrs[3] = {};
-
-        // Location 0: inPosition (vec2)
-        attrs[0].location = 0;
-        attrs[0].buffer_slot = 0;
-        attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-        attrs[0].offset = offsetof(Vertex, x);
-
-        // Location 1: inUV (vec2)
-        attrs[1].location = 1;
-        attrs[1].buffer_slot = 0;
-        attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-        attrs[1].offset = offsetof(Vertex, u);
-
-        // Location 2: inColor (vec4)
-        attrs[2].location = 2;
-        attrs[2].buffer_slot = 0;
-        attrs[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
-        attrs[2].offset = offsetof(Vertex, r);
-
-        SDL_GPUVertexBufferDescription buffer_desc = {
-            .slot = 0,
-            .pitch = sizeof(float) * 8,
-        };
-
 		SDL_GPUShaderCreateInfo shader_info = {
             .code_size = ass_vert_len,
             .code = ass_vert,
 			.entrypoint = "main",
 			.format = SDL_GPU_SHADERFORMAT_SPIRV,
             .stage = SDL_GPU_SHADERSTAGE_VERTEX,
-            .num_uniform_buffers = 0
+            .num_storage_buffers = 1,
+            .num_uniform_buffers = 0,
 		};
         SDL_GPUShader *vert_shader = SDL_CreateGPUShader(device, &shader_info);
         shader_info.code_size = ass_frag_len,
         shader_info.code = ass_frag;
         shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
 		shader_info.num_samplers = 1;
+        shader_info.num_storage_buffers = 0;
     	shader_info.num_uniform_buffers = 0;
         SDL_GPUShader *frag_shader = SDL_CreateGPUShader(device, &shader_info);
 
-        SDL_GPUGraphicsPipelineCreateInfo pipeline_info = {
-            .vertex_shader = vert_shader,
-            .fragment_shader = frag_shader,
-            .vertex_input_state = {
-                .vertex_buffer_descriptions = &buffer_desc,
-                .num_vertex_buffers = 1,
-                .vertex_attributes = attrs,
-                .num_vertex_attributes = 3,
-            },
-            .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
-        };
-
-        // 2. Enable Standard Alpha Blending
-        SDL_GPUColorTargetDescription color_desc = {
+        auto color_desc = SDL_GPUColorTargetDescription{
             .format = SDL_GetGPUSwapchainTextureFormat(device, window),
             .blend_state = {
                 .src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
@@ -531,9 +485,15 @@ private:
                 .enable_blend = true,
             }
         };
-
-        pipeline_info.target_info.color_target_descriptions = &color_desc;
-        pipeline_info.target_info.num_color_targets = 1;
+        SDL_GPUGraphicsPipelineCreateInfo pipeline_info = {
+            .vertex_shader = vert_shader,
+            .fragment_shader = frag_shader,
+            .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+            .target_info = {
+                .color_target_descriptions = &color_desc,
+                .num_color_targets = 1,
+            },
+        };
 
         pipeline = SDL_CreateGPUGraphicsPipeline(device, &pipeline_info);
         SDL_ReleaseGPUShader(device, vert_shader);

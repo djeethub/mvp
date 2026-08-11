@@ -60,7 +60,6 @@ struct AppState {
 
     ff::VideoFile video;
     AppGpu gpu;
-    SDL_AudioDeviceID audio_device_id = 0;
     double seek_time;
     Status status = Running;
     std::vector<ff::ChapterData> chapter_list;
@@ -112,10 +111,6 @@ struct AppState {
     void reset_runtime_state() {
         video.close();
         audio_stream.reset();
-        if (audio_device_id != 0) {
-            SDL_CloseAudioDevice(audio_device_id);
-            audio_device_id = 0;
-        }
         clear_frame_buffers();
         is_loopable = false;
     }
@@ -218,61 +213,50 @@ struct AppState {
             if (video.find_audio_stream()) {
                 if (video.open_audio_decoder()) {
     //                video.setup_swr_context();
+                    auto audio_ctx = video.get_audio_ctx();
+                    SDL_Log("in_sample_fmt: %s\n", av_get_sample_fmt_name(audio_ctx->sample_fmt));
 
-                    int count = 0;
-                    auto *devices = SDL_GetAudioPlaybackDevices(&count);
-                    if (count > 0) {
-                        SDL_AudioFormat sdl_fmt = SDL_AUDIO_UNKNOWN;
-                        auto audio_ctx = video.get_audio_ctx();
-                        switch (audio_ctx->sample_fmt) {
-                            case AV_SAMPLE_FMT_U8:
-                            case AV_SAMPLE_FMT_U8P:
-                                sdl_fmt = SDL_AUDIO_U8;
-                                break;
-                            case AV_SAMPLE_FMT_S16:
-                            case AV_SAMPLE_FMT_S16P:
-                                sdl_fmt = SDL_AUDIO_S16;
-                                break;
-                            case AV_SAMPLE_FMT_S32:
-                            case AV_SAMPLE_FMT_S32P:
-                                sdl_fmt = SDL_AUDIO_S32;
-                                break;
-                            case AV_SAMPLE_FMT_FLT:
-                            case AV_SAMPLE_FMT_FLTP:
-                                sdl_fmt = SDL_AUDIO_F32;
-                                break;
-                            case AV_SAMPLE_FMT_DBL:
-                            case AV_SAMPLE_FMT_DBLP:
-                            case AV_SAMPLE_FMT_S64:
-                            case AV_SAMPLE_FMT_S64P:
-                                sdl_fmt = SDL_AUDIO_UNKNOWN;
-                        }
-                        audio_spec = { sdl_fmt, audio_ctx->ch_layout.nb_channels, audio_ctx->sample_rate };
-                        auto stream = SDL_CreateAudioStream(&audio_spec, NULL);
-                        if (!stream) {
-                            SDL_Log("Failed to create audio stream: %s", SDL_GetError());
-                            return false;
-                        }
-                        // Open a real logical connection to the system soundcard
-                        SDL_AudioDeviceID dev_id = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, nullptr);
-                        if (dev_id == 0) {
-                            SDL_Log("Failed to open physical audio device: %s", SDL_GetError());
-                            return false;
-                        }
+                    SDL_AudioFormat sdl_fmt = SDL_AUDIO_UNKNOWN;
+                    switch (audio_ctx->sample_fmt) {
+                        case AV_SAMPLE_FMT_U8:
+                        case AV_SAMPLE_FMT_U8P:
+                            sdl_fmt = SDL_AUDIO_U8;
+                            break;
+                        case AV_SAMPLE_FMT_S16:
+                        case AV_SAMPLE_FMT_S16P:
+                            sdl_fmt = SDL_AUDIO_S16;
+                            break;
+                        case AV_SAMPLE_FMT_S32:
+                        case AV_SAMPLE_FMT_S32P:
+                            sdl_fmt = SDL_AUDIO_S32;
+                            break;
+                        case AV_SAMPLE_FMT_FLT:
+                        case AV_SAMPLE_FMT_FLTP:
+                            sdl_fmt = SDL_AUDIO_F32;
+                            break;
+                        case AV_SAMPLE_FMT_DBL:
+                        case AV_SAMPLE_FMT_DBLP:
+                        case AV_SAMPLE_FMT_S64:
+                        case AV_SAMPLE_FMT_S64P:
+                            sdl_fmt = SDL_AUDIO_UNKNOWN;
+                    }
+                    audio_spec = { sdl_fmt, audio_ctx->ch_layout.nb_channels, audio_ctx->sample_rate };
+                    
+                    auto stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, nullptr, nullptr);
+                    if (!stream) {
+                        SDL_Log("Failed to create audio stream: %s", SDL_GetError());
+                    } else {
                         audio_stream.reset(stream);
-                        audio_device_id = dev_id;
-                        SDL_BindAudioStream(dev_id, audio_stream.get());
-                        SDL_ResumeAudioDevice(dev_id);
+                        if (!video.is_paused)
+                            SDL_ResumeAudioStreamDevice(stream);
                         is_loopable = true;
                     }
-                    else
-                        SDL_Log("Audio Error: %s", SDL_GetError());
-                    SDL_free(devices);
                 }
             }
 
             if (video.find_video_stream()) {
                 if (video.open_video_decoder()) {
+                    SDL_Log("in_pix_fmt: %s\n", av_get_pix_fmt_name(video.get_video_ctx()->pix_fmt));
                 }
             }
 

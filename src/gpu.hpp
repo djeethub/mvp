@@ -292,8 +292,8 @@ private:
 
 		destroy_textures();
 		pixel_format = static_cast<AVPixelFormat>(frame->format);
+		SDL_Log("out_pix_fmt: %s\n", av_get_pix_fmt_name(pixel_format));
 		init_pipeline(pixel_format);
-		SDL_Log("pixel_format %i\n", pixel_format);
 		width = frame->width;
 		height = frame->height;
 		reset_scale();
