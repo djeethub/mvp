@@ -30,7 +30,6 @@ static SDL_HitTestResult SDLCALL WindowHitTest(SDL_Window *win, const SDL_Point 
 }
 
 AppGui gui;
-AssHandler ass;
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     if (argc < 2 || !argv[1]) return SDL_APP_FAILURE;
@@ -235,19 +234,14 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
     if (!state->video.is_paused) {
         state->check_audio_frame();
         auto play_time = state->get_play_time();
+        state->check_subtitle();
         auto video_frame = state->check_video_frame(play_time);
         if (video_frame) {
-            ff::Subtitle *subtitle;
-            while (state->video.sub_queue.dequeue(subtitle)) {
-                ass.add_ass(subtitle->text, static_cast<long long>(subtitle->pts * 1000), static_cast<long long>(subtitle->duration * 1000));
-    //                printf("subtitle: %s, %f, %f\n", subtitle->text.c_str(), subtitle->pts, subtitle->duration);
-                state->video.sub_queue.recycle(subtitle);
-            }
-            state->gpu.set_frame(video_frame, play_time);
+            state->gpu.set_frame(video_frame, play_time, state->app_sub);
         }    
     }
 
-    state->gpu.render();
+    state->gpu.render(state->app_sub);
     return app_result;
 }
 
@@ -256,7 +250,6 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     if (state) {
         SDL_SetWindowHitTest(state->window.get(), nullptr, nullptr);
         state->shutdown();
-        ass.shutdown();
         gui.shutdown();
         SDL_WaitForGPUIdle(state->gpu.get_device());
         delete state;

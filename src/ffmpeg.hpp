@@ -18,7 +18,6 @@ extern "C" {
 
 #include "concurrentqueue.h"
 #include "readerwriterqueue.h"
-#include "twowayqueue.hpp"
 
 namespace ff {
 
@@ -96,60 +95,40 @@ public:
     }
 };
 
-template <typename T, typename Deleter>
-class AvQueue {
+struct AVSubtitle_ : public AVSubtitle {
+    double frame_time;
+    double duration;
+};
+
+class SubtitlePool {
 protected:
-    std::queue<T> queue;
+    moodycamel::ConcurrentQueue<AVSubtitle_ *> recycle_queue;
 
 public:
-    ~AvQueue() {
-        clear();
-    }
-
-    void clear() {
-        while (!queue.empty())
-        {
-            Deleter{}(queue.front());
-            queue.pop();
+    ~SubtitlePool() {
+        AVSubtitle_ *frame;
+        while (recycle_queue.try_dequeue(frame)) {
+            delete frame;
         }
     }
 
-    T get() {
-        T data_ptr = queue.front();
-        queue.pop();
-        return data_ptr;
+    void recycle(AVSubtitle_ *frame) {
+        if (!frame)
+            return;
+        avsubtitle_free(frame);
+        recycle_queue.enqueue(frame);
     }
 
-    T front() {
-        return queue.front();
-    }
-
-    void pop() {
-        queue.pop();
-    }
-
-    void push(T data_ptr) {
-        if (data_ptr) {
-            queue.push(data_ptr);
-        }
-    }
-
-    auto size() {
-        return queue.size();
-    }
-
-    auto empty() {
-        return queue.empty();
+    AVSubtitle_ *alloc() {
+        AVSubtitle_ *frame;
+        if (recycle_queue.try_dequeue(frame))
+            return frame;
+        return new AVSubtitle_;
     }
 };
-
-struct FrameDeleter {
-    void operator()(AVFrame *frame) { av_frame_free(&frame); }
-};
-
-using FrameQueue = AvQueue<AVFrame *, FrameDeleter>;
 
 FramePool frame_pool;
+SubtitlePool sub_pool;
 
 inline AVFrame *frame_alloc() {
     return frame_pool.alloc();
@@ -159,9 +138,21 @@ inline void frame_recycle(AVFrame *frame) {
     frame_pool.recycle(frame);
 }
 
+inline AVSubtitle_ *subtitle_alloc() {
+    return sub_pool.alloc();
+}
+
+inline void subtitle_recycle(AVSubtitle_ *frame) {
+    sub_pool.recycle(frame);
+}
+
+class VideoFile *_video;
+
 class VideoFile {
 public:
-    VideoFile() = default;
+    VideoFile() {
+        _video = this;
+    }
     ~VideoFile() {
         close();
         av_packet_free(&packet);
@@ -173,6 +164,7 @@ public:
     VideoFile(VideoFile&&) = delete;
     VideoFile& operator=(VideoFile&&) = delete;
 
+    auto get_start_time() { return start_time; }
     auto get_duration() const { return duration; }
     auto get_video_time_base() const { return video_time_base; }
     auto get_audio_time_base() const { return audio_time_base; }
@@ -190,7 +182,7 @@ public:
 
     moodycamel::ReaderWriterQueue<AVFrame *> audio_frame_queue;
     moodycamel::ReaderWriterQueue<AVFrame *> video_frame_queue;
-    TwowayQueue<Subtitle *> sub_queue{32};
+    moodycamel::ReaderWriterQueue<AVSubtitle_ *> sub_queue;
     std::mutex mutex;
     std::condition_variable cv;
     Status status = Play;
@@ -215,6 +207,7 @@ public:
             close();
             return false;
         }
+        start_time = static_cast<double>(format_ctx->start_time) * AV_TIME_BASE;
         duration = static_cast<double>(format_ctx->duration) / AV_TIME_BASE;
         if (!packet) packet = av_packet_alloc();
         if (!frame) frame = frame_pool.alloc();
@@ -425,7 +418,7 @@ public:
         }
     }
 
-    int64_t seek(int64_t ts)
+    int64_t seek_internal(int64_t ts)
     {
         int seek_result = avformat_seek_file(
                 format_ctx,
@@ -445,8 +438,10 @@ public:
     }
 
     bool seek(double ts) {
-        if (seek(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0) {
+        if (seek_internal(static_cast<int64_t>(ts * AV_TIME_BASE)) >= 0) {
             set_seeking(true);
+            if (ts > get_start_time())
+                set_skip(AVDISCARD_NONREF, AVDISCARD_ALL, AVDISCARD_ALL);
             last_video_time = ts;
             last_audio_time = ts;
             return true;
@@ -457,7 +452,6 @@ public:
     void set_seeking(bool set) {
         if (set) {
             is_seeking = true;
-            set_skip(AVDISCARD_NONREF, AVDISCARD_ALL, AVDISCARD_ALL);
 //            clear_frame_buffers();
         } else {
             is_seeking = false;
@@ -500,10 +494,6 @@ public:
         return chapter_list;
     }
 
-    double get_start_time() {
-        return static_cast<double>(format_ctx->start_time * AV_TIME_BASE);
-    }
-
     void print_error_str(int err) {
         char err_buf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(err, err_buf, sizeof(err_buf));
@@ -532,14 +522,6 @@ public:
         video_codec_ctx->skip_frame = frame;
         video_codec_ctx->skip_loop_filter = loop_filter;
         video_codec_ctx->skip_idct = idct;
-    }
-
-    void add_subtitle(const std::string& text, AVPacket *packet) {
-        auto data = sub_queue.alloc();
-        data->text = text;
-        data->pts = packet->pts * get_subtitle_time_base();
-        data->duration = packet->duration * get_subtitle_time_base();
-        sub_queue.enqueue(data);
     }
 
     int read_next_frame(double play_time, bool preload = false) {
@@ -599,26 +581,21 @@ public:
             }
             else if (packet->stream_index == subtitle_stream_idx) {
                 int got_subtitle = 0;
-                AVSubtitle subtitle;
+                auto sub = subtitle_alloc();
                 // avcodec_decode_subtitle2 is old but still the standard way to handle subtitles in modern FFmpeg
-                if (avcodec_decode_subtitle2(subtitle_codec_ctx, &subtitle, &got_subtitle, packet) >= 0) {
+                if (avcodec_decode_subtitle2(subtitle_codec_ctx, sub, &got_subtitle, packet) >= 0) {
                     if (got_subtitle) {
-                        for (unsigned int i = 0; i < subtitle.num_rects; i++) {
-                            AVSubtitleRect* rect = subtitle.rects[i];
-                            if (rect->type == SUBTITLE_TEXT && rect->text) {
-                                add_subtitle(rect->text, packet);
-                            } 
-                            else if (rect->type == SUBTITLE_ASS && rect->ass) {
-                                // ASS subtitles contain formatting markers (e.g., {\an8}) alongside text
-        //                        std::cout << "<" << subtitle.start_display_time << "ms> " << rect->ass << "\n";
-        //                        set_subtitle(extract_dialogue_ass(rect->ass), packet->duration * video.subtitle_time_base);
-        //                        ass.add_ass(rect, packet->pts * video.subtitle_time_base * 1000, packet->duration * video.subtitle_time_base * 1000);
-                                add_subtitle(rect->ass, packet);
-                            }
-                        }                    
-
-                        avsubtitle_free(&subtitle);
-                    }
+                        sub->frame_time = packet->pts * get_subtitle_time_base();
+                        if (sub->end_display_time)
+                            if (sub->end_display_time == UINT_MAX)
+                                sub->duration = 0;
+                            else
+                                sub->duration = sub->end_display_time / 1000.0;
+                        else
+                            sub->duration = packet->duration * get_subtitle_time_base();
+                        sub_queue.enqueue(sub);
+                    } else
+                        subtitle_recycle(sub);
                 }
             }
             av_packet_unref(packet);
@@ -701,12 +678,12 @@ private:
     std::vector<std::string> audio_lang_pref = {"ja", "jpn", "en", "eng"};
     int subtitle_stream_idx = -1;
     AVCodecContext* subtitle_codec_ctx = nullptr;
+    double start_time;
     double duration;
     double video_time_base = 0.0;
     double audio_time_base = 0.0;
     double subtitle_time_base = 0.0;
     std::thread thread;
-    double tick_diff;
     double last_video_time;
     double last_audio_time;
 };

@@ -3,7 +3,8 @@
 #include <SDL3/SDL.h>
 #include "imgui_impl_sdlgpu3.h"
 
-// #include "lanczos-3.frag.h"
+#include "subtitle.hpp"
+
 #include "vert.vert.h"
 #include "nv12.frag.h"
 #include "rgb.frag.h"
@@ -11,8 +12,6 @@
 #include "gray.frag.h"
 #include "pal8.frag.h"
 #include "yuv_10.frag.h"
-
-extern AssHandler ass;
 
 enum ShaderType
 {
@@ -562,7 +561,7 @@ public:
 		return true;
 	}
 
-	void set_frame(AVFrame *frame, double play_time) {
+	void set_frame(AVFrame *frame, double play_time, AppSubtitle *sub) {
 		if (this->frame)
 			ff::frame_recycle(this->frame);
 		this->frame = frame;
@@ -571,7 +570,8 @@ public:
 		SDL_GPUCopyPass *copy_pass = SDL_BeginGPUCopyPass(cmd);
 
 		prepare_texture_draw(copy_pass);
-		ass.prepare_draw(copy_pass, play_time);
+		if (sub)
+			sub->prepare_draw(copy_pass, play_time);
 		
 		SDL_EndGPUCopyPass(copy_pass);
 		if (!SDL_SubmitGPUCommandBuffer(cmd))
@@ -580,7 +580,7 @@ public:
 		}
 	}
 
-	void render()
+	void render(AppSubtitle *sub)
 	{
 		SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
 		if (!cmd)
@@ -604,7 +604,8 @@ public:
 			SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &color_target, 1, nullptr);
 
 			draw_texture(cmd, pass);
-			ass.draw(cmd, pass);
+			if (sub)
+				sub->draw(cmd, pass);
 			ImGui_ImplSDLGPU3_RenderDrawData(draw_data, cmd, pass);
 
 			SDL_EndGPURenderPass(pass);

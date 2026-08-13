@@ -39,6 +39,8 @@ set(SHADER_SOURCES
     shaders/yuv_10.frag
     shaders/gray.frag
     shaders/pal8.frag
+    shaders/bitmap.vert
+    shaders/bitmap.frag
 )
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

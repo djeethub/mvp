@@ -4,55 +4,9 @@
 #include <SDL3/SDL.h>
 
 #include "ffmpeg.hpp"
+#include "subtitle.hpp"
 #include "ass.vert.h"
 #include "ass.frag.h"
-
-template <typename T>
-class GPUPool {
-protected:
-    std::vector<T *> in_use_list;
-    std::vector<T *> list;
-    SDL_GPUDevice *device;
-
-public:
-    void init(SDL_GPUDevice *device) {
-        this->device = device;
-    }
-
-    auto get_in_use() {
-        return in_use_list;
-    }
-
-    void recycle(T *buf) {
-        buf->reset();
-        list.push_back(buf);
-    }
-
-    void in_use(T *buf) {
-        in_use_list.push_back(buf);
-    }
-
-    void recycle() {
-        while (!in_use_list.empty()) {
-            auto data = in_use_list.back();
-            data->reset();
-            list.push_back(data);
-            in_use_list.pop_back();
-        }
-    }
-
-    void destroy(T *data) {
-        data->destroy(device);
-    }
-
-    void clear() {
-        recycle();
-        for (auto data : list) {
-            destroy(data);
-        }
-        list.clear();
-    }
-};
 
 struct alignas(16) AtlasRegion {
     float u0, v0; // Top-Left UV
@@ -231,8 +185,76 @@ public:
     }
 };
 
-class AssHandler {
+class SubAss : public AppSubtitle {
+private:
+    std::unique_ptr<ASS_Library, decltype(&ass_library_done)> ass_library{nullptr, ass_library_done};
+    std::unique_ptr<ASS_Renderer, decltype(&ass_renderer_done)> ass_renderer{nullptr, ass_renderer_done};
+    std::unique_ptr<ASS_Track, decltype(&ass_free_track)> ass_track{nullptr, ass_free_track};
+    SDL_GPUGraphicsPipeline *pipeline = nullptr;
+    int wnd_w = 0;
+    int wnd_h = 0;
+    SDL_GPUSampler *sampler = nullptr;
+    AtlasPool atlas_pool;
+    VertexPool vertex_pool;
+
+    bool init_pipeline(SDL_Window *window) {
+        if (pipeline)
+            return true;
+
+		SDL_GPUShaderCreateInfo shader_info = {
+            .code_size = ass_vert_len,
+            .code = ass_vert,
+			.entrypoint = "main",
+			.format = SDL_GPU_SHADERFORMAT_SPIRV,
+            .stage = SDL_GPU_SHADERSTAGE_VERTEX,
+            .num_storage_buffers = 1,
+            .num_uniform_buffers = 0,
+		};
+        SDL_GPUShader *vert_shader = SDL_CreateGPUShader(device, &shader_info);
+        shader_info.code_size = ass_frag_len,
+        shader_info.code = ass_frag;
+        shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+		shader_info.num_samplers = 1;
+        shader_info.num_storage_buffers = 0;
+    	shader_info.num_uniform_buffers = 0;
+        SDL_GPUShader *frag_shader = SDL_CreateGPUShader(device, &shader_info);
+
+        auto color_desc = SDL_GPUColorTargetDescription{
+            .format = SDL_GetGPUSwapchainTextureFormat(device, window),
+            .blend_state = {
+                .src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+                .dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .color_blend_op = SDL_GPU_BLENDOP_ADD,
+                .src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE,
+                .dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .alpha_blend_op = SDL_GPU_BLENDOP_ADD,
+                .enable_blend = true,
+            }
+        };
+        SDL_GPUGraphicsPipelineCreateInfo pipeline_info = {
+            .vertex_shader = vert_shader,
+            .fragment_shader = frag_shader,
+            .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+            .target_info = {
+                .color_target_descriptions = &color_desc,
+                .num_color_targets = 1,
+            },
+        };
+
+        pipeline = SDL_CreateGPUGraphicsPipeline(device, &pipeline_info);
+        SDL_ReleaseGPUShader(device, vert_shader);
+		SDL_ReleaseGPUShader(device, frag_shader);
+        return pipeline != nullptr;
+    }
+
 public:
+    SubAss(SDL_GPUDevice *gpu) : AppSubtitle(gpu) {
+        init_once(gpu);
+    }
+    ~SubAss() {
+        shutdown();
+    }
+
     void shutdown() {
         SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
         pipeline = nullptr;
@@ -243,8 +265,6 @@ public:
     }
 
     void init_once(SDL_GPUDevice *device) {
-        if (this->device)
-            return;
         this->device = device;
         atlas_pool.init(device);
         vertex_pool.init(device);
@@ -373,12 +393,13 @@ public:
             AtlasRegion out_uv;
             while (true) {
                 if (!atlas) {
-                    atlas = atlas_pool.alloc(wnd_w, wnd_h / 2);
+                    atlas = atlas_pool.alloc(wnd_w, wnd_h);
                 }
                 if (atlas->alloc_region(img->w, img->h, out_x, out_y, out_uv))
                     break;
                 if (atlas->vertices.empty()) {
                     atlas->destroy(device);
+                    return; // too large img?
                 } else {
                     upload_vertices(pass, atlas);
                     atlas_pool.in_use(atlas);
@@ -449,68 +470,4 @@ public:
         if (ass_renderer)
             ass_set_frame_size(ass_renderer.get(), wnd_w, wnd_h); // Match your window canvas size
     }
-
-private:
-    bool init_pipeline(SDL_Window *window) {
-        if (pipeline)
-            return true;
-
-		SDL_GPUShaderCreateInfo shader_info = {
-            .code_size = ass_vert_len,
-            .code = ass_vert,
-			.entrypoint = "main",
-			.format = SDL_GPU_SHADERFORMAT_SPIRV,
-            .stage = SDL_GPU_SHADERSTAGE_VERTEX,
-            .num_storage_buffers = 1,
-            .num_uniform_buffers = 0,
-		};
-        SDL_GPUShader *vert_shader = SDL_CreateGPUShader(device, &shader_info);
-        shader_info.code_size = ass_frag_len,
-        shader_info.code = ass_frag;
-        shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-		shader_info.num_samplers = 1;
-        shader_info.num_storage_buffers = 0;
-    	shader_info.num_uniform_buffers = 0;
-        SDL_GPUShader *frag_shader = SDL_CreateGPUShader(device, &shader_info);
-
-        auto color_desc = SDL_GPUColorTargetDescription{
-            .format = SDL_GetGPUSwapchainTextureFormat(device, window),
-            .blend_state = {
-                .src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
-                .dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                .color_blend_op = SDL_GPU_BLENDOP_ADD,
-                .src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE,
-                .dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                .alpha_blend_op = SDL_GPU_BLENDOP_ADD,
-                .enable_blend = true,
-            }
-        };
-        SDL_GPUGraphicsPipelineCreateInfo pipeline_info = {
-            .vertex_shader = vert_shader,
-            .fragment_shader = frag_shader,
-            .primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
-            .target_info = {
-                .color_target_descriptions = &color_desc,
-                .num_color_targets = 1,
-            },
-        };
-
-        pipeline = SDL_CreateGPUGraphicsPipeline(device, &pipeline_info);
-        SDL_ReleaseGPUShader(device, vert_shader);
-		SDL_ReleaseGPUShader(device, frag_shader);
-        return pipeline != nullptr;
-    }
-
-private:
-    std::unique_ptr<ASS_Library, decltype(&ass_library_done)> ass_library{nullptr, ass_library_done};
-    std::unique_ptr<ASS_Renderer, decltype(&ass_renderer_done)> ass_renderer{nullptr, ass_renderer_done};
-    std::unique_ptr<ASS_Track, decltype(&ass_free_track)> ass_track{nullptr, ass_free_track};
-    SDL_GPUGraphicsPipeline *pipeline = nullptr;
-    SDL_GPUDevice *device = nullptr;
-    SDL_GPUTexture *glyph_tex = nullptr;
-    int wnd_w = 0;
-    int wnd_h = 0;
-    SDL_GPUSampler *sampler = nullptr;
-    AtlasPool atlas_pool;
-    VertexPool vertex_pool;
 };
