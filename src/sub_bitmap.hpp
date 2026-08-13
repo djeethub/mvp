@@ -203,34 +203,24 @@ public:
         sub_list.push_back(sub);
     }
 
-    template <typename T, typename Pred>
-    void erase_before_matching_from_end(std::list<T>& lst, Pred pred) {
-        auto rit = std::find_if(lst.rbegin(), lst.rend(), pred);
-        if (rit == lst.rend()) {
-            return;                       // nothing matched – leave the list unchanged
-        }
-
-        // rit.base() points one past the matched element in forward order.
-        // The forward iterator to the matched element is therefore:
-        auto match = std::prev(rit.base());
-
-        // Erase [begin, match) → everything that precedes the match.
-        lst.erase(lst.begin(), match);
-    }    
-
     void prepare_draw(SDL_GPUCopyPass *pass, double play_time) {
         tex_pool.recycle();
 
-        erase_before_matching_from_end(sub_list, [play_time](ff::AVSubtitle_ *sub){ return sub->frame_time < play_time; });
-
         for (auto it = sub_list.begin(); it != sub_list.end(); ) {
-            auto sub = (*it);
-            if (sub->frame_time > play_time)
+            if ((*it)->frame_time > play_time)
                 break;
-            if (sub->duration > 0 && sub->frame_time + sub->duration < play_time) {
+            while (true) {
+                auto next = std::next(it);
+                if (next == sub_list.end() || (*next)->frame_time > play_time)
+                    break;
+                ff::subtitle_recycle((*it));
                 it = sub_list.erase(it);
+            }
+            auto sub = (*it);
+            if (sub->frame_time + sub->duration < play_time) {
                 ff::subtitle_recycle(sub);
-                continue;
+                it = sub_list.erase(it);
+                break;
             }
 
             for (auto i = 0; i < sub->num_rects; i++) {
@@ -277,7 +267,7 @@ public:
                 };
                 tex_pool.in_use(tex);
             }
-            it++;
+            break;
         }
     }
 

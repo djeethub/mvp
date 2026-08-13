@@ -587,10 +587,7 @@ public:
                     if (got_subtitle) {
                         sub->frame_time = packet->pts * get_subtitle_time_base();
                         if (sub->end_display_time)
-                            if (sub->end_display_time == UINT_MAX)
-                                sub->duration = 0;
-                            else
-                                sub->duration = sub->end_display_time / 1000.0;
+                            sub->duration = sub->end_display_time / 1000.0;
                         else
                             sub->duration = packet->duration * get_subtitle_time_base();
                         sub_queue.enqueue(sub);
