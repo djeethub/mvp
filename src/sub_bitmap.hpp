@@ -102,6 +102,8 @@ class SubBitmap : public AppSubtitle {
 private:
     BitmapPool tex_pool;
     std::list<ff::AVSubtitle_ *> sub_list;
+    int canvas_w;
+    int canvas_h;
 
     bool init_pipeline(SDL_Window *window) {
         if (pipeline)
@@ -182,9 +184,32 @@ public:
 		sampler = SDL_CreateGPUSampler(device, &samp_info);
     }
 
-    bool init(SDL_Window *window) {
+    bool init(AVCodecContext *sub_codec_ctx, SDL_Window *window) {
         flush();
+
         SDL_GetWindowSizeInPixels(window, &wnd_w, &wnd_h);
+
+        canvas_w = sub_codec_ctx->width;
+        canvas_h = sub_codec_ctx->height;
+
+        // Level 1: Fallback to video stream dimensions
+        // (Most bitmap subtitles without explicit headers are authored to match video canvas)
+        if (canvas_w <= 0 || canvas_h <= 0) {
+//            canvas_w = video_codec_ctx->width;
+//            canvas_h = video_codec_ctx->height;
+        }
+
+        // Level 2: Format-specific defaults (if video dimensions are also unavailable)
+        if (canvas_w <= 0 || wnd_h <= 0) {
+            if (sub_codec_ctx->codec_id == AV_CODEC_ID_DVD_SUBTITLE) {
+                canvas_w = 720;
+                canvas_h = 480;
+            } else {
+                // Last resort global default
+                canvas_w = 1920;
+                canvas_h = 1080;
+            }
+        }        
 
         return init_pipeline(window);
     }
@@ -258,7 +283,7 @@ public:
                 SDL_UploadToGPUTexture(pass, &transfer_info, &region, false);
 
                 tex->form = {
-                    2.0f * rect->x / wnd_w - 1.0f, 1.0f - 2.0f * rect->y / wnd_h,
+                    2.0f * (rect->x + rect->w / 2.0f) / canvas_w - 1.0f, 1.0f - 2.0f * (rect->y + rect->h / 2.0f) / canvas_h,
                     2.0f * rect->w / wnd_w, 2.0f * rect->h / wnd_h,
                     (float) rect->w / tex->w, (float) rect->h / tex->h
                 };

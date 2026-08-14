@@ -491,7 +491,7 @@ public:
                     sub = new SubBitmap(gpu.get_device());
                     app_sub = sub;
                 }
-                sub->init(window);
+                sub->init(video.get_subtitle_ctx(), window);
             }
                 break;
 

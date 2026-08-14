@@ -205,11 +205,13 @@ public:
             close();
             return false;
         }
-        start_time = static_cast<double>(format_ctx->start_time) * AV_TIME_BASE;
+        start_time = format_ctx->start_time == AV_NOPTS_VALUE ? 0.0 : static_cast<double>(format_ctx->start_time) * AV_TIME_BASE;
         duration = static_cast<double>(format_ctx->duration) / AV_TIME_BASE;
         if (!packet) packet = av_packet_alloc();
         if (!frame) frame = frame_pool.alloc();
         is_eof.store(false, std::memory_order_release);
+        last_audio_time = start_time;
+        last_video_time = start_time;
         return true;
     }
 
@@ -251,7 +253,23 @@ public:
                 }
             }
         }
+
+        for (const auto& val : sub_lang_pref) {
+            for (const auto& data : subtitle_list) {
+                if (is_substring(data.title, val)) {
+                    subtitle_stream_idx = data.idx;
+                    return true;
+                }
+            }
+        }
+
         return false;
+    }
+
+    static bool is_substring(const std::string& str, const std::string& sub) {
+        std::string lower_str = str;
+        std::transform(lower_str.begin(), lower_str.end(), lower_str.begin(), ::tolower);
+        return lower_str.find(sub) != std::string::npos;
     }
 
     bool find_audio_stream()
@@ -273,6 +291,15 @@ public:
         for (const auto& val : audio_lang_pref) {
             for (const auto& data : audio_list) {
                 if (data.lang == val) {
+                    audio_stream_index = data.idx;
+                    return true;
+                }
+            }
+        }
+
+        for (const auto& val : audio_lang_pref) {
+            for (const auto& data : audio_list) {
+                if (is_substring(data.title, val)) {
                     audio_stream_index = data.idx;
                     return true;
                 }
@@ -402,8 +429,6 @@ public:
         subtitle_list.clear();
         audio_list.clear();
         is_seeking = false;
-        last_video_time = 0.0;
-        last_audio_time = 0.0;
     }
 
     void get_video_dimensions(int& width, int& height) const {

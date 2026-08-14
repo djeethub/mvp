@@ -10,10 +10,10 @@ layout(std140, set = 1, binding = 0) uniform TransformBlock {
 layout(location = 0) out vec2 outUV;
 
 const vec2 unit_quad[4] = vec2[](
-    vec2(0.0, -1.0), // Bottom-Left
-    vec2(1.0, -1.0), // Bottom-Right
-    vec2(0.0,  0.0), // Top-Left
-    vec2(1.0,  0.0)  // Top-Right
+    vec2(-0.5, -0.5), // Bottom-Left
+    vec2( 0.5, -0.5), // Bottom-Right
+    vec2(-0.5,  0.5), // Top-Left
+    vec2( 0.5,  0.5)  // Top-Right
 );
 
 const vec2 uvs[4] = vec2[](
