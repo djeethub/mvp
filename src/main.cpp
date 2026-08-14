@@ -34,29 +34,20 @@ AppGui gui;
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     if (argc < 2 || !argv[1]) return SDL_APP_FAILURE;
 
-    if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+    if (!SDL_Init(SDL_INIT_AUDIO)) {
         SDL_Log("Failed to initialize SDL Audio: %s", SDL_GetError());
-        return SDL_APP_FAILURE;
     }
     SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, "waitevent");
 
     auto state = new AppState();
     *appstate = state;
-
-    Uint32 window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIDDEN;
-    state->window.reset(SDL_CreateWindow("miv", 800, 600, window_flags));
-    if (!state->window) { return SDL_APP_FAILURE; }
-
-    state->gpu.init(state->window.get());
-
-//    state->renderer.reset(state->gpu.create_renderer());
-//    if (!state->renderer) { return SDL_APP_FAILURE; }
-
+    if (!state->init())
+        return SDL_APP_FAILURE;
 
     if (!state->open_file(argv[1])) { return SDL_APP_FAILURE; }
     gui.init(state);
-    SDL_ShowWindow(state->window.get());
-    SDL_SetWindowHitTest(state->window.get(), WindowHitTest, nullptr);
+    SDL_ShowWindow(state->window);
+    SDL_SetWindowHitTest(state->window, WindowHitTest, nullptr);
     return SDL_APP_CONTINUE;
 }
 
@@ -200,7 +191,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     break;
 
                 case SDLK_F9:
-                    SDL_MinimizeWindow(state->window.get());
+                    SDL_MinimizeWindow(state->window);
                     state->pause(true);
                     break;
             }
@@ -214,7 +205,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         {
             const char* dropped_file_path = event->drop.data;
             if (dropped_file_path) {
-                std::cout << "File dropped: " << dropped_file_path << std::endl;
+                SDL_Log("File dropped: %s\n", dropped_file_path);
                 state->open_file(dropped_file_path);
             }
         }
@@ -230,28 +221,18 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
     auto app_result = gui.draw();
     if (app_result != SDL_APP_CONTINUE)
         return app_result;
- 
-    if (!state->video.is_paused) {
-        state->check_audio_frame();
-        auto play_time = state->get_play_time();
-        state->check_subtitle();
-        auto video_frame = state->check_video_frame(play_time);
-        if (video_frame) {
-            state->gpu.set_frame(video_frame, play_time, state->app_sub);
-        }    
-    }
 
-    state->gpu.render(state->app_sub);
+    state->render();
     return app_result;
 }
 
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     auto *state = static_cast<AppState*>(appstate);
     if (state) {
-        SDL_SetWindowHitTest(state->window.get(), nullptr, nullptr);
+        SDL_SetWindowHitTest(state->window, nullptr, nullptr);
         state->shutdown();
-        gui.shutdown();
         SDL_WaitForGPUIdle(state->gpu.get_device());
+        gui.shutdown();
         delete state;
     }
 }

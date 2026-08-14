@@ -2,18 +2,12 @@
 
 #include <string>
 #include <vector>
-#include <memory>
 #include <filesystem>
-#include <algorithm>
-#include <cmath>
-#include <cctype>
-#include <cstdio>
-#include <cstdlib>
 #include <thread>
-#include <queue>
 #include <mutex>
 #include <condition_variable>
 #include <future>
+#include <variant>
 
 #include "ffmpeg.hpp"
 #include "subtitle.hpp"
@@ -25,10 +19,6 @@
 const auto LARGE_INTERVAL = 777777.7;
 
 namespace fs = std::filesystem;
-
-using WindowPtr = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
-using RendererPtr = std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)>;
-using AudioStream = std::unique_ptr<SDL_AudioStream, decltype(&SDL_DestroyAudioStream)>;
 
 enum MediaMode {
     None = 0,
@@ -42,11 +32,9 @@ struct DirData {
     int idx;
 };
 
-class AppState *_state;
-
 class AppState {
 private:
-    AudioStream audio_stream{nullptr, SDL_DestroyAudioStream};
+    SDL_AudioStream *audio_stream = nullptr;
     static inline const std::unordered_set<std::string> video_exts = { ".mp4", ".mkv", ".mov", ".flv", ".wmv", ".webm" };
     static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif" };
     std::future<DirData *> dir_future;
@@ -60,17 +48,27 @@ public:
     std::size_t current_index = -1;
     std::string parent_dir;
     bool trigger_context_menu = false;
-    WindowPtr window{nullptr, SDL_DestroyWindow};
+    SDL_Window *window = nullptr;
     ff::VideoFile video;
     AppGpu gpu;
-    AppSubtitle *app_sub = nullptr;
+    AppSub app_sub;
     std::vector<ff::ChapterData> chapter_list;
     bool is_seeking = false;
     bool is_loop = true;
     MediaMode media_mode;
+    
+    ~AppState() {
+        gpu.shutdown();
+        if (window)
+            SDL_DestroyWindow(window);
+    }
 
-    AppState() {
-        _state = this;
+    bool init() {
+        Uint32 window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIDDEN;
+        window = SDL_CreateWindow("mvp", 800, 600, window_flags);
+        if (!window) { return false; }
+
+        return gpu.init(window);
     }
 
     static MediaMode is_supported_format(const fs::path &p, MediaMode mode = None) {
@@ -98,9 +96,11 @@ public:
 
     void clear_frame_buffers() {
         if (audio_stream)
-            SDL_ClearAudioStream(audio_stream.get());
-        if (app_sub)
-            app_sub->flush();
+            SDL_ClearAudioStream(audio_stream);
+        std::visit([](auto&& sub){
+            if (sub)
+                sub->flush();
+        }, app_sub);
 
         AVFrame *frame;
         while (video.video_frame_queue.try_dequeue(frame))
@@ -114,7 +114,10 @@ public:
 
     void reset_runtime_state() {
         video.close();
-        audio_stream.reset();
+        if (audio_stream) {
+            SDL_DestroyAudioStream(audio_stream);
+            audio_stream = nullptr;
+        }
         clear_frame_buffers();
         is_loopable = false;
         sub_type = SUBTITLE_NONE;
@@ -123,10 +126,12 @@ public:
     bool shutdown() {
         video.stop_thead();
         reset_runtime_state();
-        if (app_sub) {
-            delete app_sub;
-            app_sub = nullptr;
-        }
+        std::visit([](auto&& sub){
+            if (sub) {
+                delete sub;
+                sub = nullptr;
+            }
+        }, app_sub);
         return true;
     }
 
@@ -167,7 +172,7 @@ public:
     bool open_file(const char *file_path) {
         auto mode = is_supported_format(file_path);
         if (mode == None) {
-            std::cerr << "Not supported file: " << file_path << "\n";
+            SDL_Log("Not supported file: %s\n", file_path);
             return false;
         }
 
@@ -251,13 +256,12 @@ public:
                     }
                     audio_spec = { sdl_fmt, audio_ctx->ch_layout.nb_channels, audio_ctx->sample_rate };
                     
-                    auto stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, nullptr, nullptr);
-                    if (!stream) {
+                    audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, nullptr, nullptr);
+                    if (!audio_stream) {
                         SDL_Log("Failed to create audio stream: %s", SDL_GetError());
                     } else {
-                        audio_stream.reset(stream);
                         if (!video.is_paused)
-                            SDL_ResumeAudioStreamDevice(stream);
+                            SDL_ResumeAudioStreamDevice(audio_stream);
                         is_loopable = true;
                     }
                 }
@@ -277,7 +281,7 @@ public:
             chapter_list = video.read_chapters();
 
             resize_window();
-            SDL_SetWindowTitle(window.get(), file_path.c_str());
+            SDL_SetWindowTitle(window, file_path.c_str());
             
             seek_time = video.get_start_time();
             video.seek_time = seek_time;
@@ -402,11 +406,11 @@ public:
             }
             if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frame->format))) {
                 // Perfect for FLTP (extracts from any standard video file container)
-                SDL_PutAudioStreamPlanarData(audio_stream.get(), (const void * const *)frame->data, frame->ch_layout.nb_channels, frame->nb_samples);
+                SDL_PutAudioStreamPlanarData(audio_stream, (const void * const *)frame->data, frame->ch_layout.nb_channels, frame->nb_samples);
             } else {
                 // Perfect for packed/interleaved layouts (like FLT, S16, S32)
                 int size_in_bytes = frame->nb_samples * frame->ch_layout.nb_channels * av_get_bytes_per_sample(static_cast<AVSampleFormat>(frame->format));
-                SDL_PutAudioStreamData(audio_stream.get(), frame->data[0], size_in_bytes);
+                SDL_PutAudioStreamData(audio_stream, frame->data[0], size_in_bytes);
             }
             ff::frame_recycle(frame);
         }
@@ -457,31 +461,37 @@ public:
                 int target_w, target_h;
                 video.get_video_dimensions(target_w, target_h);
 
-                SubAss *ass = dynamic_cast<SubAss *>(app_sub);
-                if (ass) {
-                    ass->init(target_w, target_h, video.get_subtitle_ctx(), video.get_format_ctx(), window.get());
-                    return;
+                SubAss *sub;
+                auto pp = std::get_if<SubAss *>(&app_sub);
+                if (pp && *pp) {
+                    sub = *pp;
+                } else {
+                    std::visit([](auto&& sub){
+                        if (sub)
+                            delete sub;
+                    }, app_sub);
+                    sub = new SubAss(gpu.get_device());
+                    app_sub = sub;
                 }
-                if (app_sub)
-                    delete app_sub;
-                ass = new SubAss(gpu.get_device());
-                ass->init(target_w, target_h, video.get_subtitle_ctx(), video.get_format_ctx(), window.get());
-                app_sub = ass;
+                sub->init(target_w, target_h, video.get_subtitle_ctx(), video.get_format_ctx(), window);
             }
                 break;
 
             case SUBTITLE_BITMAP:
             {
-                SubBitmap *sub = dynamic_cast<SubBitmap *>(app_sub);
-                if (sub) {
-                    sub->init(window.get());
-                    return;
+                SubBitmap *sub;
+                auto pp = std::get_if<SubBitmap *>(&app_sub);
+                if (pp && *pp) {
+                    sub = *pp;
+                } else {
+                    std::visit([](auto&& sub){
+                        if (sub)
+                            delete sub;
+                    }, app_sub);
+                    sub = new SubBitmap(gpu.get_device());
+                    app_sub = sub;
                 }
-                if (app_sub)
-                    delete app_sub;
-                sub = new SubBitmap(gpu.get_device());
-                sub->init(window.get());
-                app_sub = sub;
+                sub->init(window);
             }
                 break;
 
@@ -494,7 +504,7 @@ public:
         while (auto pp = video.sub_queue.peek()) {
             auto sub = *pp;
             if (sub_type == SUBTITLE_BITMAP) {
-                dynamic_cast<SubBitmap *>(app_sub)->add_sub(sub);
+                std::get<SubBitmap *>(app_sub)->add_sub(sub);
                 video.sub_queue.pop();
                 continue;
             }
@@ -505,11 +515,11 @@ public:
                 switch (rect->type) {
                     case SUBTITLE_ASS:
                         if (rect->ass) {
-                            dynamic_cast<SubAss *>(app_sub)->add_ass(rect->ass, static_cast<long long>(sub->frame_time * 1000), static_cast<long long>(sub->duration * 1000));
+                            std::get<SubAss *>(app_sub)->add_ass(rect->ass, static_cast<long long>(sub->frame_time * 1000), static_cast<long long>(sub->duration * 1000));
                         }
                         break;
                     case SUBTITLE_BITMAP:
-                        dynamic_cast<SubBitmap *>(app_sub)->add_sub(sub);
+                        std::get<SubBitmap *>(app_sub)->add_sub(sub);
                         done = true;
                         break;
                 }
@@ -550,8 +560,8 @@ public:
 
         int current_x = 0, current_y = 0;
         int current_w = 0, current_h = 0;
-        SDL_GetWindowPosition(window.get(), &current_x, &current_y);
-        SDL_GetWindowSize(window.get(), &current_w, &current_h);
+        SDL_GetWindowPosition(window, &current_x, &current_y);
+        SDL_GetWindowSize(window, &current_w, &current_h);
         int center_x = current_x + current_w / 2;
         int center_y = current_y + current_h / 2;
 
@@ -577,8 +587,8 @@ public:
         if (new_y + target_h > display_bounds.y + display_bounds.h)
             new_y = display_bounds.y + display_bounds.h - target_h;
 
-        SDL_SetWindowSize(window.get(), target_w, target_h);
-        SDL_SetWindowPosition(window.get(), new_x, new_y);
+        SDL_SetWindowSize(window, target_w, target_h);
+        SDL_SetWindowPosition(window, new_x, new_y);
     }
 
     void pause(bool pause_only = false) {
@@ -591,7 +601,7 @@ public:
                 video.status = ff::Reset;
                 video.shared_tick.store(get_ticks() - seek_time, std::memory_order_relaxed);
             } else {
-                SDL_PauseAudioStreamDevice(audio_stream.get());
+                SDL_PauseAudioStreamDevice(audio_stream);
                 seek_time = get_play_time();
                 video.is_paused = true;
                 set_video_play(false);
@@ -599,7 +609,7 @@ public:
             }
         }
         video.cv.notify_one();
-        SDL_ResumeAudioStreamDevice(audio_stream.get());
+        SDL_ResumeAudioStreamDevice(audio_stream);
         set_video_play(true);
     }
 
@@ -610,8 +620,10 @@ public:
     void select_subtitle(int idx) {
         std::lock_guard<std::mutex> lock(video.mutex);
         if (video.get_subtitle_index() != idx) {
-            if (app_sub)
-                app_sub->flush();
+            std::visit([](auto&& sub){
+                if (sub)
+                    sub->flush();
+            }, app_sub);
             video.select_subtitle(idx);
         }
     }
@@ -631,5 +643,19 @@ public:
             is_playing = play;
             SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, play ? 0 : "waitevent");
         }
+    }
+
+    void render() {
+        if (!video.is_paused) {
+            check_audio_frame();
+            check_subtitle();
+            auto play_time = get_play_time();
+            auto video_frame = check_video_frame(play_time);
+            if (video_frame) {
+                gpu.set_frame(video_frame, play_time, app_sub);
+            }    
+        }
+
+        gpu.render(app_sub);
     }
 };

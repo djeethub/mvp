@@ -1,7 +1,7 @@
 #pragma once
 
 #include <SDL3/SDL.h>
-#include "imgui_impl_sdlgpu3.h"
+#include <imgui_impl_sdlgpu3.h>
 
 #include "subtitle.hpp"
 
@@ -561,7 +561,7 @@ public:
 		return true;
 	}
 
-	void set_frame(AVFrame *frame, double play_time, AppSubtitle *sub) {
+	void set_frame(AVFrame *frame, double play_time, AppSub sub) {
 		if (this->frame)
 			ff::frame_recycle(this->frame);
 		this->frame = frame;
@@ -570,8 +570,10 @@ public:
 		SDL_GPUCopyPass *copy_pass = SDL_BeginGPUCopyPass(cmd);
 
 		prepare_texture_draw(copy_pass);
-		if (sub)
-			sub->prepare_draw(copy_pass, play_time);
+		std::visit([&](auto&& sub){
+			if (sub)
+				sub->prepare_draw(copy_pass, play_time);
+		}, sub);
 		
 		SDL_EndGPUCopyPass(copy_pass);
 		if (!SDL_SubmitGPUCommandBuffer(cmd))
@@ -580,7 +582,7 @@ public:
 		}
 	}
 
-	void render(AppSubtitle *sub)
+	void render(AppSub sub)
 	{
 		SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
 		if (!cmd)
@@ -604,8 +606,10 @@ public:
 			SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &color_target, 1, nullptr);
 
 			draw_texture(cmd, pass);
-			if (sub)
-				sub->draw(cmd, pass);
+			std::visit([&](auto&& sub){
+				if (sub)
+					sub->draw(cmd, pass);
+			}, sub);
 			ImGui_ImplSDLGPU3_RenderDrawData(draw_data, cmd, pass);
 
 			SDL_EndGPURenderPass(pass);

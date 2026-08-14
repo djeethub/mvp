@@ -100,10 +100,6 @@ public:
 
 class SubBitmap : public AppSubtitle {
 private:
-    SDL_GPUGraphicsPipeline *pipeline = nullptr;
-    int wnd_w = 0;
-    int wnd_h = 0;
-    SDL_GPUSampler *sampler = nullptr;
     BitmapPool tex_pool;
     std::list<ff::AVSubtitle_ *> sub_list;
 
@@ -172,7 +168,8 @@ public:
         flush();
     }
 
-    void init_once(SDL_GPUDevice *device) {
+    void init_once(SDL_GPUDevice *gpu) {
+        device = gpu;
         tex_pool.init(device);
 
 		SDL_GPUSamplerCreateInfo samp_info = {
@@ -231,7 +228,7 @@ public:
                     continue;
 
                 auto tex = tex_pool.alloc(rect->w, rect->h);
-                uint8_t* dst = (uint8_t*)SDL_MapGPUTransferBuffer(device, tex->buf, true);
+                uint8_t* dst = (uint8_t*)SDL_MapGPUTransferBuffer(device, tex->buf, false);
                 Uint32 pal_offset = rect->nb_colors * 4;
                 SDL_memcpy(dst, rect->data[1], pal_offset);
                 dst += pal_offset;
@@ -252,13 +249,13 @@ public:
                     .h = (Uint32) rect->h,
                     .d = 1
                 };
-                SDL_UploadToGPUTexture(pass, &transfer_info, &region, true);
+                SDL_UploadToGPUTexture(pass, &transfer_info, &region, false);
                 transfer_info.transfer_buffer = tex->buf;
                 transfer_info.offset = 0;
                 region.texture = tex->tex_pal;
                 region.w = rect->nb_colors;
                 region.h = 1;
-                SDL_UploadToGPUTexture(pass, &transfer_info, &region, true);
+                SDL_UploadToGPUTexture(pass, &transfer_info, &region, false);
 
                 tex->form = {
                     2.0f * rect->x / wnd_w - 1.0f, 1.0f - 2.0f * rect->y / wnd_h,

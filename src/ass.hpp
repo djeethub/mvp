@@ -187,13 +187,9 @@ public:
 
 class SubAss : public AppSubtitle {
 private:
-    std::unique_ptr<ASS_Library, decltype(&ass_library_done)> ass_library{nullptr, ass_library_done};
-    std::unique_ptr<ASS_Renderer, decltype(&ass_renderer_done)> ass_renderer{nullptr, ass_renderer_done};
-    std::unique_ptr<ASS_Track, decltype(&ass_free_track)> ass_track{nullptr, ass_free_track};
-    SDL_GPUGraphicsPipeline *pipeline = nullptr;
-    int wnd_w = 0;
-    int wnd_h = 0;
-    SDL_GPUSampler *sampler = nullptr;
+    ASS_Library *ass_library = nullptr;
+    ASS_Renderer *ass_renderer = nullptr;
+    ASS_Track *ass_track = nullptr;
     AtlasPool atlas_pool;
     VertexPool vertex_pool;
 
@@ -262,10 +258,22 @@ public:
         sampler = nullptr;
         atlas_pool.clear();
         vertex_pool.clear();
+        if (ass_track) {
+            ass_free_track(ass_track);
+            ass_track = nullptr;
+        }
+        if (ass_renderer) {
+            ass_renderer_done(ass_renderer);
+            ass_renderer = nullptr;
+        }
+        if (ass_library) {
+            ass_library_done(ass_library);
+            ass_library = nullptr;
+        }
     }
 
-    void init_once(SDL_GPUDevice *device) {
-        this->device = device;
+    void init_once(SDL_GPUDevice *gpu) {
+        device = gpu;
         atlas_pool.init(device);
         vertex_pool.init(device);
 
@@ -278,28 +286,34 @@ public:
 		};
 		sampler = SDL_CreateGPUSampler(device, &samp_info);
 
-        ass_library.reset(ass_library_init());
+        ass_library = ass_library_init();
     }
 
     bool init(int width, int height, AVCodecContext *subtitle_codec_ctx, AVFormatContext *format_ctx, SDL_Window *window) {
-        ass_track.reset();
-        ass_renderer.reset();
+        if (ass_track) {
+            ass_free_track(ass_track);
+            ass_track = nullptr;
+        }
+        if (ass_renderer) {
+            ass_renderer_done(ass_renderer);
+            ass_renderer = nullptr;
+        }
         SDL_GetWindowSizeInPixels(window, &wnd_w, &wnd_h);
 
         // 1. Initialize your standard libass environment
         load_embedded_fonts(format_ctx);
-        ass_renderer.reset(ass_renderer_init(ass_library.get()));
-        ass_set_fonts(ass_renderer.get(), nullptr, "Sans", 1, nullptr, 0);
-        ass_set_storage_size(ass_renderer.get(), width, height);
-        ass_set_frame_size(ass_renderer.get(), wnd_w, wnd_h); // Match your window canvas size
-        ass_set_hinting(ass_renderer.get(), ASS_HINTING_NATIVE);
+        ass_renderer = ass_renderer_init(ass_library);
+        ass_set_fonts(ass_renderer, nullptr, "Sans", 1, nullptr, 0);
+        ass_set_storage_size(ass_renderer, width, height);
+        ass_set_frame_size(ass_renderer, wnd_w, wnd_h); // Match your window canvas size
+        ass_set_hinting(ass_renderer, ASS_HINTING_NATIVE);
 
         // 2. Create an EMPTY, blank track that you will feed packets manually
-        ass_track.reset(ass_new_track(ass_library.get()));
+        ass_track = ass_new_track(ass_library);
 
         if (subtitle_codec_ctx->subtitle_header_size > 0) {
             ass_process_codec_private(
-                ass_track.get(), 
+                ass_track, 
                 (char*)subtitle_codec_ctx->subtitle_header, 
                 subtitle_codec_ctx->subtitle_header_size
             );
@@ -310,7 +324,7 @@ public:
     }
 
     void load_embedded_fonts(AVFormatContext* format_ctx) {
-        ass_clear_fonts(ass_library.get());
+        ass_clear_fonts(ass_library);
 
         // Loop through all tracks/streams in the container
         for (unsigned int i = 0; i < format_ctx->nb_streams; i++) {
@@ -333,10 +347,10 @@ public:
                     int font_data_size = stream->codecpar->extradata_size;
 
                     // Register the raw font buffer into libass's internal memory pool
-                    ass_add_font(ass_library.get(), font_name.c_str(), font_data, font_data_size);
+                    ass_add_font(ass_library, font_name.c_str(), font_data, font_data_size);
                     
-                    std::cout << "Successfully matched and loaded font: " << font_name 
-                            << " (" << font_data_size << " bytes)" << std::endl;
+//                    std::cout << "Successfully matched and loaded font: " << font_name 
+//                            << " (" << font_data_size << " bytes)" << std::endl;
                 }
             }
         }
@@ -344,12 +358,12 @@ public:
 
     void flush() {
         if (ass_track)
-            ass_flush_events(ass_track.get());
+            ass_flush_events(ass_track);
     }
 
     void add_ass(const std::string& text, long long pts, long long duration) {
         ass_process_chunk(
-                        ass_track.get(), 
+                        ass_track, 
                         text.c_str(),          // The raw time-stripped ASS string payload
                         text.length(),  // String length
                         pts,             // Explicit start time (ms)
@@ -381,7 +395,7 @@ public:
 
         int changed = 0;
         // Ask libass to process the track at this specific millisecond frame marker
-        ASS_Image* img = ass_render_frame(ass_renderer.get(), ass_track.get(), play_time * 1000, &changed);
+        ASS_Image* img = ass_render_frame(ass_renderer, ass_track, play_time * 1000, &changed);
         // 3. Draw the active text lines over the frame canvas
         Atlas *atlas = nullptr;
         for (; img; img = img->next) {
@@ -468,6 +482,6 @@ public:
         wnd_w = w;
         wnd_h = h;
         if (ass_renderer)
-            ass_set_frame_size(ass_renderer.get(), wnd_w, wnd_h); // Match your window canvas size
+            ass_set_frame_size(ass_renderer, wnd_w, wnd_h); // Match your window canvas size
     }
 };

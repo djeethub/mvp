@@ -2,8 +2,6 @@
 
 #include <SDL3/SDL.h>
 
-#include "ffmpeg.hpp"
-
 template <typename T>
 class GPUPool {
 protected:
@@ -54,14 +52,15 @@ public:
 class AppSubtitle {
 protected:
     SDL_GPUDevice *device = nullptr;
-    
-    AppSubtitle(SDL_GPUDevice *gpu) : device(gpu) {}
+    SDL_GPUGraphicsPipeline *pipeline = nullptr;
+    SDL_GPUSampler *sampler = nullptr;
+    int wnd_w = 0;
+    int wnd_h = 0;
 
 public:
-    virtual ~AppSubtitle() {}
-
-    virtual void shutdown() = 0;
-    virtual void flush() = 0;
-    virtual void prepare_draw(SDL_GPUCopyPass *pass, double play_time) = 0;
-    virtual void draw(SDL_GPUCommandBuffer *cmd, SDL_GPURenderPass *pass) = 0;
+    AppSubtitle(SDL_GPUDevice *gpu) : device(gpu) {}
 };
+
+class SubAss;
+class SubBitmap;
+using AppSub = std::variant<SubAss *, SubBitmap *>;

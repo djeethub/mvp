@@ -1,8 +1,6 @@
 #pragma once
 
-#include <iostream>
 #include <string>
-#include <queue>
 #include <unordered_set>
 #include <format>
 
@@ -198,12 +196,12 @@ public:
 
         if (avformat_open_input(&format_ctx, filename.c_str(), nullptr, nullptr) < 0)
         {
-            std::cerr << "Could not open video file.\n";
+            SDL_Log("Could not open video file.\n");
             return false;
         }
         if (avformat_find_stream_info(format_ctx, nullptr) < 0)
         {
-            std::cerr << "Could not find stream information.\n";
+            SDL_Log("Could not find stream information.\n");
             close();
             return false;
         }
@@ -525,7 +523,7 @@ public:
     }
 
     int read_next_frame(double play_time, bool preload = false) {
-        int read_result;
+        int read_result = 0;
         double target_play_time = play_time + PRELOAD_TIME;
 
         while ((is_video() && last_video_time < target_play_time) || (is_audio() && last_audio_time < target_play_time)) {
@@ -663,10 +661,8 @@ private:
     AVCodecContext* audio_codec_ctx = nullptr;
     SwrContext* swr_ctx = nullptr;
     int audio_stream_index = -1;
-
     AVCodecContext* video_codec_ctx = nullptr;
     int video_stream_index = -1;
-
     AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
     std::vector<AudioData> subtitle_list;

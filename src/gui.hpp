@@ -3,12 +3,12 @@
 #include <string>
 #include <format>
 
-#include <fontconfig/fontconfig.h>
-
+#include <SDL3/SDL.h>
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
-#include "imgui_impl_sdlgpu3.h"
-#include <SDL3/SDL.h>
+#include <imgui_impl_sdlgpu3.h>
+
+#include <fontconfig/fontconfig.h>
 
 #include "appstate.hpp"
 
@@ -108,7 +108,7 @@ class AppGui {
                 }
                 FcPatternDestroy(font);
             } else {
-                std::cout << "No matching font found.\n";
+                SDL_Log("No matching font found.\n");
             }
 
             // Cleanup
@@ -152,10 +152,10 @@ class AppGui {
 //            if (subtitleFont == nullptr) subtitleFont = io.Fonts->AddFontDefault();            
 
             // Setup Platform/Renderer Backends
-            ImGui_ImplSDL3_InitForSDLGPU(state->window.get());
+            ImGui_ImplSDL3_InitForSDLGPU(state->window);
             ImGui_ImplSDLGPU3_InitInfo init_info = {};
             init_info.Device = state->gpu.get_device();
-            init_info.ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(state->gpu.get_device(), state->window.get());
+            init_info.ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(state->gpu.get_device(), state->window);
             init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
             ImGui_ImplSDLGPU3_Init(&init_info);
         }
@@ -295,7 +295,7 @@ class AppGui {
                 }
                 if (ImGui::MenuItem("Minimize", "F9", false, true))
                 {
-                    SDL_MinimizeWindow(state->window.get());
+                    SDL_MinimizeWindow(state->window);
                     state->pause(true);
                 }
                 if (ImGui::BeginMenu("Audio"))
