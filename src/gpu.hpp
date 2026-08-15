@@ -436,6 +436,7 @@ public:
 		sampler = nullptr;
 		SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
 		pipeline = nullptr;
+		SDL_ReleaseWindowFromGPUDevice(device, window);
 		SDL_DestroyGPUDevice(device);
 		device = nullptr;
 		av_frame_free(&frame);

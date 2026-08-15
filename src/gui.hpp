@@ -148,15 +148,16 @@ class AppGui {
 
             // 4. Fallback safeguard: If files are missing, default back to ProggyClean safely
             if (uiFont == nullptr)  uiFont  = io.Fonts->AddFontDefaultVector();
-            if (osdFont == nullptr) osdFont = io.Fonts->AddFontDefaultVector();            
+            if (osdFont == nullptr) osdFont = io.Fonts->AddFontDefaultVector();
 //            if (subtitleFont == nullptr) subtitleFont = io.Fonts->AddFontDefault();            
 
             // Setup Platform/Renderer Backends
             ImGui_ImplSDL3_InitForSDLGPU(state->window);
-            ImGui_ImplSDLGPU3_InitInfo init_info = {};
-            init_info.Device = state->gpu.get_device();
-            init_info.ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(state->gpu.get_device(), state->window);
-            init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
+            ImGui_ImplSDLGPU3_InitInfo init_info = {
+                .Device = state->gpu.get_device(),
+                .ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(state->gpu.get_device(), state->window),
+                .MSAASamples = SDL_GPU_SAMPLECOUNT_1,
+            };
             ImGui_ImplSDLGPU3_Init(&init_info);
         }
 

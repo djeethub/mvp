@@ -382,7 +382,7 @@ public:
         if (swr_err < 0 || swr_init(swr_ctx) < 0)
         {
             SDL_Log("Failed to initialize SwrContext conversion engine!");
-            return SDL_APP_FAILURE;
+            return false;
         }
         return true;
     }
