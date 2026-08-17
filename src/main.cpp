@@ -13,7 +13,7 @@ static SDL_HitTestResult SDLCALL WindowHitTest(SDL_Window *win, const SDL_Point 
     if (ImGui::GetIO().WantCaptureMouse) return SDL_HITTEST_NORMAL;
 
     int w, h;
-    SDL_GetWindowSize(win, &w, &h);
+    SDL_GetWindowSizeInPixels(win, &w, &h);
     bool top = (area->y <= BORDER_SIZE), bottom = (area->y >= h - BORDER_SIZE);
     bool left = (area->x <= BORDER_SIZE), right = (area->x >= w - BORDER_SIZE);
 
@@ -26,7 +26,9 @@ static SDL_HitTestResult SDLCALL WindowHitTest(SDL_Window *win, const SDL_Point 
     if (left) return SDL_HITTEST_RESIZE_LEFT;
     if (right) return SDL_HITTEST_RESIZE_RIGHT;
 
-    return SDL_HITTEST_DRAGGABLE;
+    if (SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)
+        return SDL_HITTEST_DRAGGABLE;
+    return SDL_HITTEST_NORMAL;
 }
 
 AppGui gui;
@@ -34,7 +36,7 @@ AppGui gui;
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
     if (argc < 2 || !argv[1]) return SDL_APP_FAILURE;
 
-    if (!SDL_Init(SDL_INIT_AUDIO)) {
+    if (!SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO)) {
         SDL_Log("Failed to initialize SDL Audio: %s", SDL_GetError());
     }
     SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, "waitevent");
@@ -76,9 +78,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             break;
 
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            if (event->button.button == SDL_BUTTON_RIGHT)
-                state->trigger_context_menu = true;
-            else if (event->button.button == SDL_BUTTON_MIDDLE) {
+            if (event->button.button == SDL_BUTTON_MIDDLE) {
                 state->pause();
                 gui.show_noti(state->video.is_paused ? "Paused" : "Resumed");
             }

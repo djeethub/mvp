@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(main LANGUAGES CXX)
+project(main LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig REQUIRED)
 find_package(SDL3 REQUIRED)
-pkg_check_modules(AVCODEC REQUIRED libavcodec libavformat libswresample libavutil libswscale)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavformat libswresample libavutil libswscale)
 pkg_check_modules(LIBASS REQUIRED IMPORTED_TARGET libass)
 #find_package(Fontconfig REQUIRED)
 
@@ -101,19 +101,18 @@ target_include_directories(my_imgui PUBLIC
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
 )
+target_link_libraries(my_imgui PRIVATE SDL3::SDL3)
 
-add_executable(main
+add_executable(main WIN32
     src/main.cpp
 )
 add_dependencies(main CompileShaders)
 
 target_compile_definitions(main PRIVATE SDL_MAIN_USE_CALLBACKS=1)
 
-# Main project only needs to know about SDL headers (ImGui headers come automatically via link)
 target_include_directories(main PRIVATE 
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends
-    ${AVCODEC_INCLUDE_DIRS}
     ${CMAKE_CURRENT_BINARY_DIR}/shaders
     ${readerwriterqueue_dir}
     ${concurrentqueue_dir}
@@ -122,8 +121,8 @@ target_include_directories(main PRIVATE
 target_link_libraries(main PRIVATE
     SDL3::SDL3
     my_imgui
-    ${AVCODEC_LIBRARIES}
-    ${LIBASS_LIBRARIES}
+    PkgConfig::FFMPEG
+    PkgConfig::LIBASS
 #    Fontconfig::Fontconfig
 )
 

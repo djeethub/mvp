@@ -27,23 +27,47 @@
       }
     },
     {
-      "name": "linux-only",
-      "inherits": "debug",
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
-      }
-    },
-    {
-      "name": "windows-only",
-      "inherits": "debug",
+      "name": "windows",
+      "inherits": "default",
+      "hidden": true,
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
       },
-      "generator": "Ninja"
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "CMAKE_PREFIX_PATH": "C:/SDK/SDL3-3.4.14/cmake"
+      },
+      "environment": {
+        "PKG_CONFIG_PATH": "D:/Linux/Project/vendor/vcpkg/installed/x64-windows/lib/pkgconfig",
+        "PATH": "D:/Linux/Project/vendor/vcpkg/installed/x64-windows/tools/shaderc;C:/Program Files/Git/usr/bin;$penv{PATH}"
+      },
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "toolset": {
+        "value": "host=x64",
+        "strategy": "external"
+      }
+    },
+    {
+      "name": "win-debug",
+      "inherits": "windows",
+      "displayName": "Windows Debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "win-release",
+      "inherits": "windows",
+      "displayName": "Windows Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     }
-  ]
+ ]
 }

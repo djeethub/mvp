@@ -8,7 +8,7 @@
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_sdlgpu3.h>
 
-#include <fontconfig/fontconfig.h>
+//#include <fontconfig/fontconfig.h>
 
 #include "appstate.hpp"
 
@@ -70,7 +70,7 @@ class AppGui {
                 ImGui::DestroyContext();
             }
         }
-
+/*
         static std::string search_font_linux(const char* family_name, const char* style_name) {
             std::string out_path;
 
@@ -100,10 +100,9 @@ class AppGui {
                 // Extract font file path and matched family name
                 if (FcPatternGetString(font, FC_FILE, 0, &file) == FcResultMatch &&
                     FcPatternGetString(font, FC_FAMILY, 0, &matched_family) == FcResultMatch) {
-/*                    
-                    std::cout << "Requested Family: " << family_name << "\n";
-                    std::cout << "Matched Family:   " << matched_family << "\n";
-                    std::cout << "Font Path:        " << file << "\n";*/
+//                    std::cout << "Requested Family: " << family_name << "\n";
+//                    std::cout << "Matched Family:   " << matched_family << "\n";
+//                    std::cout << "Font Path:        " << file << "\n";
                     out_path = (char *) file;
                 }
                 FcPatternDestroy(font);
@@ -117,7 +116,7 @@ class AppGui {
             FcFini();
             return out_path;
         }        
-
+*/
         void init(AppState *state)
         {
             AppGui::state = state;
@@ -266,12 +265,9 @@ class AppGui {
             }
             ImGui::End();
 
-            if (state->trigger_context_menu)
-            {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
                 ImGui::OpenPopup("mymenu");
-                state->trigger_context_menu = false;
             }
-
             if (ImGui::BeginPopup("mymenu"))
             {
 /*                
@@ -292,7 +288,7 @@ class AppGui {
                     if (state->video.is_paused) {
                         SDL_Event event{ .type = SDL_EVENT_FIRST };
                         SDL_PushEvent(&event);
-                    }                        
+                    }
                 }
                 if (ImGui::MenuItem("Minimize", "F9", false, true))
                 {

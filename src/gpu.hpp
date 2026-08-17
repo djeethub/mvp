@@ -450,8 +450,10 @@ public:
 #else
 		device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, true, nullptr);
 #endif
-		if (!device)
+		if (!device) {
+			SDL_Log("SDL_CreateGPUDevice failed: %s", SDL_GetError());
 			return false;
+		}
 		if (!SDL_ClaimWindowForGPUDevice(device, window))
 		{
 			SDL_Log("ClaimWindow failed: %s", SDL_GetError());

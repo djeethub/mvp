@@ -344,10 +344,17 @@ public:
         AVCodecParameters *codec_params = format_ctx->streams[video_stream_index]->codecpar;
         const AVCodec *codec = avcodec_find_decoder(codec_params->codec_id);
         video_codec_ctx = avcodec_alloc_context3(codec);
+#ifdef __linux__
         AVBufferRef *hw_device_ctx = nullptr;
         if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0) == 0) {
             video_codec_ctx->hw_device_ctx = hw_device_ctx;
         }
+#else
+        AVBufferRef *hw_device_ctx = nullptr;
+        if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_D3D12VA, NULL, NULL, 0) == 0) {
+            video_codec_ctx->hw_device_ctx = hw_device_ctx;
+        }
+#endif
         video_codec_ctx->thread_count = 0;
         video_codec_ctx->thread_type = FF_THREAD_FRAME; // Or FF_THREAD_SLICE
         avcodec_parameters_to_context(video_codec_ctx, codec_params);
@@ -517,11 +524,11 @@ public:
         return chapter_list;
     }
 
-    void print_error_str(int err) {
-        char err_buf[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(err, err_buf, sizeof(err_buf));
-        printf("%i: %s\n", err, err_buf);
-    }
+    static std::string av_err2string(int errnum) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(errnum, errbuf, sizeof(errbuf));
+        return std::string(errbuf);
+    }    
 
     void select_subtitle(int idx) {
         if (subtitle_stream_idx != idx) {
@@ -586,9 +593,9 @@ public:
                                     set_seeking(false);
                                 }
                                 auto new_frame = frame_alloc();
-                                if (frame->format == AV_PIX_FMT_VAAPI) {
+                                if (frame->hw_frames_ctx) {
                                     auto err = av_hwframe_transfer_data(new_frame, frame, 0);
-                                    if (err != 0) SDL_Log("av_hwframe_transfer_data failed: %s\n", av_err2str(err));
+                                    if (err != 0) SDL_Log("av_hwframe_transfer_data failed: %s\n", av_err2string(err));
                                     new_frame->pts = frame->pts;
                                     new_frame->duration = frame->duration;
                                 }
@@ -659,7 +666,9 @@ public:
     void start_thread() {
         if (!thread.joinable()) {
             thread = std::thread(thread_worker, this);
+#ifdef __linux__
             pthread_setname_np(thread.native_handle(), "media");
+#endif
         }
     }
 

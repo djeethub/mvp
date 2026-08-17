@@ -47,7 +47,6 @@ public:
     std::vector<std::string> image_files;
     std::size_t current_index = -1;
     std::string parent_dir;
-    bool trigger_context_menu = false;
     SDL_Window *window = nullptr;
     ff::VideoFile video;
     AppGpu gpu;
@@ -212,7 +211,7 @@ public:
                 return false;
         }
 
-        return open_video(fs::path(parent_dir) / image_files[current_index]);
+        return open_video((fs::path(parent_dir) / image_files[current_index]).string());
     }
 
     bool open_video(const std::string& file_path) {
