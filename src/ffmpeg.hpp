@@ -351,7 +351,7 @@ public:
         }
 #else
         AVBufferRef *hw_device_ctx = nullptr;
-        if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_D3D12VA, NULL, NULL, 0) == 0) {
+        if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_D3D11VA, NULL, NULL, 0) == 0) {
             video_codec_ctx->hw_device_ctx = hw_device_ctx;
         }
 #endif
@@ -596,8 +596,7 @@ public:
                                 if (frame->hw_frames_ctx) {
                                     auto err = av_hwframe_transfer_data(new_frame, frame, 0);
                                     if (err != 0) SDL_Log("av_hwframe_transfer_data failed: %s\n", av_err2string(err));
-                                    new_frame->pts = frame->pts;
-                                    new_frame->duration = frame->duration;
+                                    av_frame_copy_props(new_frame, frame);
                                 }
                                 else {
                                     av_frame_move_ref(new_frame, frame);

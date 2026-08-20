@@ -7,7 +7,11 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${hostSystemName}-${presetName}",
       "cacheVariables": {
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -std=c++20 -march=native -ffast-math",
+        "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG -std=c11 -march=native -ffast-math",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE": "ON",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION_JOBS": "4"
       }
     },
     {
@@ -36,13 +40,13 @@
         "rhs": "Windows"
       },
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "cl",
-        "CMAKE_CXX_COMPILER": "cl",
-        "CMAKE_PREFIX_PATH": "C:/SDK/SDL3-3.4.14/cmake"
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_PREFIX_PATH": "C:/Apps/local/cmake"
       },
       "environment": {
-        "PKG_CONFIG_PATH": "D:/Linux/Project/vendor/vcpkg/installed/x64-windows/lib/pkgconfig",
-        "PATH": "D:/Linux/Project/vendor/vcpkg/installed/x64-windows/tools/shaderc;C:/Program Files/Git/usr/bin;$penv{PATH}"
+        "PKG_CONFIG_PATH": "C:/Apps/msys64/ucrt64/lib/pkgconfig;C:/Apps/msys64/usr/local/lib/pkgconfig;C:/Apps/local/lib/pkgconfig",
+        "PATH": "C:/Apps/msys64/ucrt64/bin;C:/Apps/msys64/usr/local/bin;C:/Apps/local/bin;C:/Program Files/Git/usr/bin;$penv{PATH}"
       },
       "architecture": {
         "value": "x64",
