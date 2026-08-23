@@ -13,6 +13,7 @@
 #include "pal8.frag.h"
 #include "yuv_10.frag.h"
 #include "yuyv.frag.h"
+#include "ya.frag.h"
 
 enum ShaderType
 {
@@ -23,7 +24,8 @@ enum ShaderType
 	GRAY_FRAG,
 	PAL8_FRAG,
 	YUV_10_FRAG,
-	YUYV_FRAG
+	YUYV_FRAG,
+	YA_FRAG
 };
 
 struct alignas(16) Vertform {
@@ -182,6 +184,14 @@ private:
 			shader_info.code = yuyv_frag;
 			shader_info.code_size = yuyv_frag_len;
 			break;
+
+		case YA_FRAG:
+			shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+			shader_info.num_samplers = 1;
+			shader_info.num_uniform_buffers = 1;
+			shader_info.code = ya_frag;
+			shader_info.code_size = ya_frag_len;
+			break;
 		}
 
 		SDL_GPUShader *shader = SDL_CreateGPUShader(device, &shader_info);
@@ -333,6 +343,8 @@ private:
 		} else {
 			if (fmt_desc->nb_components == 1) {
 				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			} else if (fmt_desc->nb_components == 2) {
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8G8_UNORM);
 			} else {
 				switch (pix_fmt)
 				{
@@ -457,39 +469,38 @@ public:
 		n_bindings = av_pix_fmt_count_planes(pix_fmt);
 
 		ShaderType frag;
-		switch (fmt_desc->nb_components) {
-			case 1:
-				bpp = fmt_desc->comp[0].depth / 8;
-				frag = GRAY_FRAG;
-				break;
-
-			case 2:
-				bpp = fmt_desc->comp[0].depth / 8;
-				frag = PAL8_FRAG;
-				break;
-
-			default:
-				if (fmt_desc->flags & AV_PIX_FMT_FLAG_RGB) {
-					bpp = 0;
-					for (auto i = 0; i < fmt_desc->nb_components; i++) {
-						bpp += fmt_desc->comp[i].depth;
-					}
-					bpp /= 8;
-					if (bpp == 3)
-						bpp++;
-					frag = RGB_FRAG;
-				} else {
-					bpp = (fmt_desc->comp[0].depth + 7) / 8;
-					if (n_bindings == 1) {
+		if (n_bindings == 1) {
+			bpp = 0;
+			for (auto i = 0; i < fmt_desc->nb_components; i++) {
+				bpp += fmt_desc->comp[i].depth;
+			}
+			bpp /= 8;
+			if (bpp == 3)
+				bpp++;
+			switch (fmt_desc->nb_components) {
+				case 1:
+					frag = GRAY_FRAG;
+					break;
+				case 2:
+					frag = YA_FRAG;
+					break;
+				default:
+					if (fmt_desc->flags & AV_PIX_FMT_FLAG_RGB)
+						frag = RGB_FRAG;
+					else
 						frag = YUYV_FRAG;
-						bpp = 4;
-					} else if (n_bindings == 2) {
-						frag = NV12_FRAG;
-					} else if (bpp > 1)
-						frag = YUV_10_FRAG;
-					else 
-						frag = YUV_FRAG;
-				}
+			}
+		} else if (fmt_desc->flags & AV_PIX_FMT_FLAG_PAL) {
+			bpp = fmt_desc->comp[0].depth / 8;
+			frag = PAL8_FRAG;
+		} else {
+			bpp = (fmt_desc->comp[0].depth + 7) / 8;
+			if (n_bindings == 2) {
+				frag = NV12_FRAG;
+			} else if (bpp > 1)
+				frag = YUV_10_FRAG;
+			else 
+				frag = YUV_FRAG;
 		}
 
 		SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
