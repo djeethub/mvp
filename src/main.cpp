@@ -26,9 +26,13 @@ static SDL_HitTestResult SDLCALL WindowHitTest(SDL_Window *win, const SDL_Point 
     if (left) return SDL_HITTEST_RESIZE_LEFT;
     if (right) return SDL_HITTEST_RESIZE_RIGHT;
 
+#ifdef __linux__
+    return SDL_HITTEST_DRAGGABLE;
+#else
     if (SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)
         return SDL_HITTEST_DRAGGABLE;
     return SDL_HITTEST_NORMAL;
+#endif
 }
 
 AppGui gui;
@@ -99,9 +103,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     break;
                 case SDLK_L:
                     if (event->key.mod & SDL_KMOD_CTRL) {
-                        const auto &filename = state->image_files[state->current_index];
-                        const fs::path full = fs::path(state->parent_dir) / filename;
-                        open_file_location(full);
+                        state->open_file_location();
                     }
                     break;
                 case SDLK_KP_9:

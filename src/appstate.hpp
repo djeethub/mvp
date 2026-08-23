@@ -35,7 +35,7 @@ struct DirData {
 class AppState {
 private:
     SDL_AudioStream *audio_stream = nullptr;
-    static inline const std::unordered_set<std::string> video_exts = { ".mp4", ".mkv", ".mov", ".flv", ".wmv", ".webm" };
+    static inline const std::unordered_set<std::string> video_exts = { ".mp4", ".mkv", ".mov", ".flv", ".wmv", ".webm", ".avi" };
     static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif" };
     std::future<DirData *> dir_future;
     double seek_time;
@@ -189,7 +189,7 @@ public:
         return true;
     }
 
-    bool open_next_file(bool next) {
+    void check_dir_future() {
         if (dir_future.valid())
         {
             auto *data = dir_future.get();
@@ -198,6 +198,10 @@ public:
             current_index = data->idx;
             delete data;
         }
+    }
+
+    bool open_next_file(bool next) {
+        check_dir_future();
 
         if (next) {
             if (current_index < image_files.size() - 1) {
@@ -656,5 +660,52 @@ public:
         }
 
         gpu.render(app_sub);
+    }
+
+    static std::string shell_quote(const std::string &value)
+    {
+        std::string escaped = "'";
+        for (char c : value)
+        {
+            if (c == '\'')
+            {
+                escaped += "'\\''";
+            }
+            else
+            {
+                escaped += c;
+            }
+        }
+        escaped += "'";
+        return escaped;
+    }
+
+    bool open_file_location()
+    {
+        check_dir_future();
+        const auto &filename = image_files[current_index];
+        const auto &file_path = (fs::path(parent_dir) / filename).string();
+
+#ifdef __linux__
+        const std::vector<std::string> commands = {
+            "nautilus --select \"" + file_path + "\"",
+            "nemo --select \"" + file_path + "\"",
+            "caja --select \"" + file_path + "\"",
+            "dolphin --select \"" + file_path + "\"",
+            "thunar --select " + file_path + "\"",
+            "xdg-open \"" + parent_dir + "\""};
+
+        for (const auto &command : commands) {
+            if (std::system(command.c_str()) == 0) {
+                return true;
+            }
+        }
+#else
+    SDL_Log(std::format("explorer.exe /select, \"{}\"", parent_dir).c_str());
+    if (std::system(std::format("explorer.exe /select, \"{}\"", file_path).c_str()) == 0) {
+        return true;
+    }
+#endif
+        return false;
     }
 };

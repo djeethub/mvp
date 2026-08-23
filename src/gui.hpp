@@ -12,52 +12,6 @@
 
 #include "appstate.hpp"
 
-namespace
-{
-    std::string shell_quote(const std::string &value)
-    {
-        std::string escaped = "'";
-        for (char c : value)
-        {
-            if (c == '\'')
-            {
-                escaped += "'\\''";
-            }
-            else
-            {
-                escaped += c;
-            }
-        }
-        escaped += "'";
-        return escaped;
-    }
-
-    bool open_file_location(const fs::path &file_path)
-    {
-        const fs::path parent_dir = file_path.parent_path();
-        const std::string quoted_file = shell_quote(file_path.string());
-        const std::string quoted_dir = shell_quote(parent_dir.string());
-
-        const std::vector<std::string> commands = {
-            "nautilus --select " + quoted_file,
-            "nemo --select " + quoted_file,
-            "caja --select " + quoted_file,
-            "dolphin --select " + quoted_file,
-            "thunar --select " + quoted_file,
-            "xdg-open " + quoted_dir};
-
-        for (const auto &command : commands)
-        {
-            if (std::system(command.c_str()) == 0)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-}
-
 class AppGui {
     public:
         AppGui() = default;
@@ -330,15 +284,11 @@ class AppGui {
                     ImGui::EndMenu();
                 }
                 ImGui::Separator();
-                if (ImGui::MenuItem("Open File Location", "Ctrl+L"))
-                {
-                    const auto &filename = state->image_files[state->current_index];
-                    const fs::path full = fs::path(state->parent_dir) / filename;
-                    open_file_location(full);
+                if (ImGui::MenuItem("Open File Location", "Ctrl+L")) {
+                    state->open_file_location();
                 }
                 ImGui::Separator();
-                if (ImGui::MenuItem("Exit", "Esc"))
-                {
+                if (ImGui::MenuItem("Exit", "Esc")) {
                     return SDL_APP_SUCCESS;
                 }
                 ImGui::EndPopup();

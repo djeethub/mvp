@@ -339,22 +339,28 @@ public:
         return true;
     }
 
-    bool open_video_decoder()
+    bool open_video_decoder(bool hwdec = true)
     {
         AVCodecParameters *codec_params = format_ctx->streams[video_stream_index]->codecpar;
         const AVCodec *codec = avcodec_find_decoder(codec_params->codec_id);
         video_codec_ctx = avcodec_alloc_context3(codec);
+        switch (codec_params->format) {
+            case AV_PIX_FMT_GRAY8:
+                hwdec = false;
+        }
+        if (hwdec) {
 #ifdef __linux__
-        AVBufferRef *hw_device_ctx = nullptr;
-        if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0) == 0) {
-            video_codec_ctx->hw_device_ctx = hw_device_ctx;
-        }
+            AVBufferRef *hw_device_ctx = nullptr;
+            if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0) == 0) {
+                video_codec_ctx->hw_device_ctx = hw_device_ctx;
+            }
 #else
-        AVBufferRef *hw_device_ctx = nullptr;
-        if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_D3D11VA, NULL, NULL, 0) == 0) {
-            video_codec_ctx->hw_device_ctx = hw_device_ctx;
-        }
+            AVBufferRef *hw_device_ctx = nullptr;
+            if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_D3D11VA, NULL, NULL, 0) == 0) {
+                video_codec_ctx->hw_device_ctx = hw_device_ctx;
+            }
 #endif
+        }
         video_codec_ctx->thread_count = 0;
         video_codec_ctx->thread_type = FF_THREAD_FRAME; // Or FF_THREAD_SLICE
         avcodec_parameters_to_context(video_codec_ctx, codec_params);

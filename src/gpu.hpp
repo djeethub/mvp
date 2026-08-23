@@ -12,6 +12,7 @@
 #include "gray.frag.h"
 #include "pal8.frag.h"
 #include "yuv_10.frag.h"
+#include "yuyv.frag.h"
 
 enum ShaderType
 {
@@ -21,7 +22,8 @@ enum ShaderType
 	YUV_FRAG,
 	GRAY_FRAG,
 	PAL8_FRAG,
-	YUV_10_FRAG
+	YUV_10_FRAG,
+	YUYV_FRAG
 };
 
 struct alignas(16) Vertform {
@@ -83,7 +85,8 @@ private:
 	SDL_GPUTexture *yTexture = nullptr;
 	SDL_GPUTexture *uTexture = nullptr;
 	SDL_GPUTexture *vTexture = nullptr;
-	AVPixelFormat pixel_format = AV_PIX_FMT_NONE;
+	AVPixelFormat pix_fmt = AV_PIX_FMT_NONE;
+	const AVPixFmtDescriptor *fmt_desc;
 	int width = 0;
 	int height = 0;
 	int de_width = 2;
@@ -93,6 +96,7 @@ private:
 	float base_scale = 0.0;
 	AVFrame *frame = nullptr;
 	int n_bindings = 0;
+	int bpp;
 	XferPool xfer_pool;
 	SwsContext *sws_ctx = nullptr;
 
@@ -170,6 +174,14 @@ private:
 			shader_info.code = pal8_frag;
 			shader_info.code_size = pal8_frag_len;
 			break;
+
+		case YUYV_FRAG:
+			shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+			shader_info.num_samplers = 1;
+			shader_info.num_uniform_buffers = 1;
+			shader_info.code = yuyv_frag;
+			shader_info.code_size = yuyv_frag_len;
+			break;
 		}
 
 		SDL_GPUShader *shader = SDL_CreateGPUShader(device, &shader_info);
@@ -225,7 +237,7 @@ private:
 			return false;
 		}
 
-		if (pixel_format == AV_PIX_FMT_RGB24) {
+		if (pix_fmt == AV_PIX_FMT_RGB24 || pix_fmt == AV_PIX_FMT_BGR24) {
 			uint8_t* dst_data[4] = { static_cast<uint8_t *>(mapped), NULL, NULL, NULL };
 			int dst_linesize[4]  = { static_cast<int>(width) * 4, 0, 0, 0 };
 			sws_scale(sws_ctx, &data, &linesize, 0, height, dst_data, dst_linesize);
@@ -286,69 +298,56 @@ private:
 
 	void create_texture(AVFrame *frame)
 	{
-		if (frame->format == pixel_format && frame->width == width && frame->height == height)
+		if (frame->format == pix_fmt && frame->width == width && frame->height == height)
 			return;
 
 		destroy_textures();
-		pixel_format = static_cast<AVPixelFormat>(frame->format);
-		SDL_Log("out_pix_fmt: %s\n", av_get_pix_fmt_name(pixel_format));
-		init_pipeline(pixel_format);
+		pix_fmt = static_cast<AVPixelFormat>(frame->format);
+		SDL_Log("out_pix_fmt: %s\n", av_get_pix_fmt_name(pix_fmt));
+		init_pipeline(pix_fmt);
 		width = frame->width;
 		height = frame->height;
 		reset_scale();
 
-		switch (pixel_format)
-		{
-		case AV_PIX_FMT_YUV420P:
-		case AV_PIX_FMT_YUVJ420P:
-		case AV_PIX_FMT_YUVJ422P:
-		case AV_PIX_FMT_YUVJ444P:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			vTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			break;
+		if (n_bindings == 3) {
+			if (bpp > 1) {
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+				vTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+			} else {
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				vTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			}
+		} else if (n_bindings == 2) {
+			if (fmt_desc->nb_components == 2) {
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				uTexture = create_plane_texture(256, 1, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
+			} else if (bpp > 1) {
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16G16_UNORM);
+			} else {
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8G8_UNORM);
+			}
+		} else {
+			if (fmt_desc->nb_components == 1) {
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			} else {
+				switch (pix_fmt)
+				{
+				case AV_PIX_FMT_BGR24:
+					setup_sws_context(pix_fmt, AV_PIX_FMT_BGRA);
+				case AV_PIX_FMT_BGRA:
+					yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
+					break;
 
-		case AV_PIX_FMT_YUV420P10LE:
-		case AV_PIX_FMT_YUV422P10LE:
-		case AV_PIX_FMT_YUV444P10LE:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			vTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			break;
-
-		case AV_PIX_FMT_NV12:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8G8_UNORM);
-			break;
-
-		case AV_PIX_FMT_P010LE:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16G16_UNORM);
-			break;
-
-		case AV_PIX_FMT_BGRA:
-		case AV_PIX_FMT_BGR24:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
-			break;
-
-		case AV_PIX_FMT_GRAY8:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			break;
-
-		case AV_PIX_FMT_PAL8:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			uTexture = create_plane_texture(256, 1, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
-			break;
-
-		case AV_PIX_FMT_RGBA:
-		case AV_PIX_FMT_RGB24:
-		default:
-			yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
-			break;
-		}
-
-		if (pixel_format == AV_PIX_FMT_RGB24) {
-			setup_sws_context(pixel_format, AV_PIX_FMT_RGBA);
+				case AV_PIX_FMT_RGB24:
+					setup_sws_context(pix_fmt, AV_PIX_FMT_RGBA);
+				default:	// AV_PIX_FMT_RGBA
+					yTexture = create_plane_texture(width / de_width, height, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
+				}
+			}
 		}
 	}
 
@@ -357,26 +356,7 @@ private:
 			return;
 		xfer_pool.recycle();
 		
-		int bpp;
-		switch (frame->format) {
-			case AV_PIX_FMT_P010LE:
-			case AV_PIX_FMT_YUV420P10LE:
-			case AV_PIX_FMT_YUV422P10LE:
-			case AV_PIX_FMT_YUV444P10LE:
-				bpp = 2;
-				break;
-			case AV_PIX_FMT_RGBA:
-			case AV_PIX_FMT_BGRA:
-			case AV_PIX_FMT_RGB24:
-			case AV_PIX_FMT_BGR24:
-				bpp = 4;
-				break;
-			default:
-				bpp = 1;
-		}
-
 		create_texture(frame);
-
 		switch (n_bindings)
 		{
 		case 3:
@@ -465,66 +445,51 @@ public:
 		return true;
 	}
 
-	SDL_GPUDevice *get_device()
-	{
+	SDL_GPUDevice *get_device()	{
 		return device;
 	}
 
-	bool init_pipeline(AVPixelFormat fmt)
+	bool init_pipeline(AVPixelFormat pix_fmt)
 	{
-		switch (fmt) {
-			case AV_PIX_FMT_YUVJ444P:
-			case AV_PIX_FMT_YUV444P10LE:
-				de_width = 1;
-				de_height = 1;
-				break;
-			case AV_PIX_FMT_YUVJ422P:
-			case AV_PIX_FMT_YUV422P10LE:
-				de_width = 2;
-				de_height = 1;
-				break;
-			default:
-				de_width = 2;
-				de_height = 2;
-		}
+		fmt_desc = av_pix_fmt_desc_get(pix_fmt);
+		de_width = 1 << fmt_desc->log2_chroma_w;
+		de_height = 1 << fmt_desc->log2_chroma_h;
+		n_bindings = av_pix_fmt_count_planes(pix_fmt);
+
 		ShaderType frag;
-		switch (fmt)
-		{
-		case AV_PIX_FMT_YUV420P:
-		case AV_PIX_FMT_YUVJ420P:
-		case AV_PIX_FMT_YUVJ422P:
-		case AV_PIX_FMT_YUVJ444P:
-			n_bindings = 3;
-			frag = YUV_FRAG;
-			break;
+		switch (fmt_desc->nb_components) {
+			case 1:
+				bpp = fmt_desc->comp[0].depth / 8;
+				frag = GRAY_FRAG;
+				break;
 
-		case AV_PIX_FMT_YUV420P10LE:
-		case AV_PIX_FMT_YUV422P10LE:
-		case AV_PIX_FMT_YUV444P10LE:
-			n_bindings = 3;
-			frag = YUV_10_FRAG;
-			break;
+			case 2:
+				bpp = fmt_desc->comp[0].depth / 8;
+				frag = PAL8_FRAG;
+				break;
 
-		case AV_PIX_FMT_NV12:
-		case AV_PIX_FMT_P010LE:
-			n_bindings = 2;
-			frag = NV12_FRAG;
-			break;
-
-		case AV_PIX_FMT_GRAY8:
-			n_bindings = 1;
-			frag = GRAY_FRAG;
-			break;
-
-		case AV_PIX_FMT_PAL8:
-			n_bindings = 2;
-			frag = PAL8_FRAG;
-			break;
-
-		default:
-			n_bindings = 1;
-			frag = RGB_FRAG;
-			break;
+			default:
+				if (fmt_desc->flags & AV_PIX_FMT_FLAG_RGB) {
+					bpp = 0;
+					for (auto i = 0; i < fmt_desc->nb_components; i++) {
+						bpp += fmt_desc->comp[i].depth;
+					}
+					bpp /= 8;
+					if (bpp == 3)
+						bpp++;
+					frag = RGB_FRAG;
+				} else {
+					bpp = (fmt_desc->comp[0].depth + 7) / 8;
+					if (n_bindings == 1) {
+						frag = YUYV_FRAG;
+						bpp = 4;
+					} else if (n_bindings == 2) {
+						frag = NV12_FRAG;
+					} else if (bpp > 1)
+						frag = YUV_10_FRAG;
+					else 
+						frag = YUV_FRAG;
+				}
 		}
 
 		SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
@@ -556,7 +521,7 @@ public:
 			.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
 			.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
 		};
-		if (fmt == AV_PIX_FMT_PAL8) {
+		if (pix_fmt == AV_PIX_FMT_PAL8) {
 			samp_info.min_filter = SDL_GPU_FILTER_NEAREST;
 			samp_info.mag_filter = SDL_GPU_FILTER_NEAREST;
 		}
