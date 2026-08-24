@@ -646,13 +646,14 @@ public:
     double time_next_frame() {
         if (is_paused && !is_seeking)
             return LARGE_INTERVAL;
-        double play_time = get_play_time();
+        auto tick = get_ticks();
+        double play_time = is_seeking ? seek_time : (tick - shared_tick.load(std::memory_order_acquire));
         auto rlt = read_next_frame(play_time, true);
 //            SDL_Log("%i %i\n", audio_frame_queue.size_approx(), video_frame_queue.size_approx());
         if (rlt < 0) {
             return LARGE_INTERVAL;
         }
-        return 0.1;
+        return 0.1 - (get_ticks() - tick);
     }
 
     static void thread_worker(VideoFile *video)

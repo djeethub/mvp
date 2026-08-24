@@ -36,7 +36,7 @@ class AppState {
 private:
     SDL_AudioStream *audio_stream = nullptr;
     static inline const std::unordered_set<std::string> video_exts = { ".mp4", ".mkv", ".mov", ".flv", ".wmv", ".webm", ".avi" };
-    static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif" };
+    static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".jfif" };
     std::future<DirData *> dir_future;
     double seek_time;
     AVSubtitleType sub_type;
@@ -687,24 +687,34 @@ public:
         const auto &file_path = (fs::path(parent_dir) / filename).string();
 
 #ifdef __linux__
-        const std::vector<std::string> commands = {
-            "nautilus --select \"" + file_path + "\"",
-            "nemo --select \"" + file_path + "\"",
-            "caja --select \"" + file_path + "\"",
-            "dolphin --select \"" + file_path + "\"",
-            "thunar --select " + file_path + "\"",
-            "xdg-open \"" + parent_dir + "\""};
+        const char * const commands[][4] = {
+            { "nautilus", "--select",  file_path.c_str(), nullptr },
+            { "nemo", "--select",  file_path.c_str(), nullptr },
+            { "caja", "--select",  file_path.c_str(), nullptr },
+            { "dolphin", "--select",  file_path.c_str(), nullptr },
+            { "thunar", "--select",  file_path.c_str(), nullptr },
+            { "xdg-open", parent_dir.c_str(), nullptr }
+        };
 
         for (const auto &command : commands) {
-            if (std::system(command.c_str()) == 0) {
+            auto proc = SDL_CreateProcess(command, false);
+            if (proc != nullptr) {
+                SDL_DestroyProcess(proc);
                 return true;
             }
         }
 #else
-    SDL_Log(std::format("explorer.exe /select, \"{}\"", parent_dir).c_str());
-    if (std::system(std::format("explorer.exe /select, \"{}\"", file_path).c_str()) == 0) {
-        return true;
-    }
+        const char* commandArgs[] = {
+            "explorer.exe",
+            "/select,",
+            file_path.c_str(),
+            nullptr
+        };
+        auto proc = SDL_CreateProcess(commandArgs, false);
+        if (proc) {
+            SDL_DestroyProcess(proc);
+            return true;
+        }
 #endif
         return false;
     }

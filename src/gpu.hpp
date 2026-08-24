@@ -14,6 +14,7 @@
 #include "yuv_10.frag.h"
 #include "yuyv.frag.h"
 #include "ya.frag.h"
+#include "yuva.frag.h"
 
 enum ShaderType
 {
@@ -25,7 +26,8 @@ enum ShaderType
 	PAL8_FRAG,
 	YUV_10_FRAG,
 	YUYV_FRAG,
-	YA_FRAG
+	YA_FRAG,
+	YUVA_FRAG
 };
 
 struct alignas(16) Vertform {
@@ -87,6 +89,7 @@ private:
 	SDL_GPUTexture *yTexture = nullptr;
 	SDL_GPUTexture *uTexture = nullptr;
 	SDL_GPUTexture *vTexture = nullptr;
+	SDL_GPUTexture *aTexture = nullptr;
 	AVPixelFormat pix_fmt = AV_PIX_FMT_NONE;
 	const AVPixFmtDescriptor *fmt_desc;
 	int width = 0;
@@ -192,6 +195,14 @@ private:
 			shader_info.code = ya_frag;
 			shader_info.code_size = ya_frag_len;
 			break;
+
+		case YUVA_FRAG:
+			shader_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+			shader_info.num_samplers = 4;
+			shader_info.num_uniform_buffers = 1;
+			shader_info.code = yuva_frag;
+			shader_info.code_size = yuva_frag_len;
+			break;
 		}
 
 		SDL_GPUShader *shader = SDL_CreateGPUShader(device, &shader_info);
@@ -225,9 +236,12 @@ private:
 			SDL_ReleaseGPUTexture(device, uTexture);
 		if (vTexture)
 			SDL_ReleaseGPUTexture(device, vTexture);
+		if (aTexture)
+			SDL_ReleaseGPUTexture(device, aTexture);
 		yTexture = nullptr;
 		uTexture = nullptr;
 		vTexture = nullptr;
+		aTexture = nullptr;
 	}
 
 	bool upload_plane(SDL_GPUCopyPass *pass, const uint8_t *data, int linesize, SDL_GPUTexture *texture, Uint32 width, Uint32 height, int bytes_per_pixel)
@@ -313,36 +327,18 @@ private:
 
 		destroy_textures();
 		pix_fmt = static_cast<AVPixelFormat>(frame->format);
+		fmt_desc = av_pix_fmt_desc_get(pix_fmt);
 		SDL_Log("out_pix_fmt: %s\n", av_get_pix_fmt_name(pix_fmt));
-		init_pipeline(pix_fmt);
+		init_pipeline();
 		width = frame->width;
 		height = frame->height;
 		reset_scale();
 
-		if (n_bindings == 3) {
-			if (bpp > 1) {
-				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-				vTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-			} else {
-				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-				vTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-			}
-		} else if (n_bindings == 2) {
-			if (fmt_desc->nb_components == 2) {
-				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-				uTexture = create_plane_texture(256, 1, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
-			} else if (bpp > 1) {
-				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
-				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16G16_UNORM);
-			} else {
-				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
-				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8G8_UNORM);
-			}
-		} else {
+		if (n_bindings == 1) {
 			if (fmt_desc->nb_components == 1) {
 				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				if (fmt_desc->flags & AV_PIX_FMT_FLAG_PAL)
+					uTexture = create_plane_texture(256, 1, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM);
 			} else if (fmt_desc->nb_components == 2) {
 				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8G8_UNORM);
 			} else {
@@ -360,6 +356,28 @@ private:
 					yTexture = create_plane_texture(width / de_width, height, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
 				}
 			}
+		} else if (n_bindings == 2) {
+			if (bpp > 1) {
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16G16_UNORM);
+			} else {
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8G8_UNORM);
+			}
+		} else {
+			if (bpp > 1) {
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+				vTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+				if (n_bindings > 3)
+					aTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R16_UNORM);
+			} else {
+				yTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				uTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				vTexture = create_plane_texture(width / de_width, height / de_height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+				if (n_bindings > 3)
+					aTexture = create_plane_texture(width, height, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
+			}
 		}
 	}
 
@@ -371,22 +389,23 @@ private:
 		create_texture(frame);
 		switch (n_bindings)
 		{
-		case 3:
+		case 1:
 			upload_plane(pass, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
-			upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / de_width, height / de_height, bpp);
-			upload_plane(pass, frame->data[2], frame->linesize[2], vTexture, width / de_width, height / de_height, bpp);
+			if (fmt_desc->flags & AV_PIX_FMT_FLAG_PAL)
+				upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, 256, 1, 4);
 			break;
 
 		case 2:
 			upload_plane(pass, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
-			if (frame->format == AV_PIX_FMT_PAL8)
-				upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, 256, 1, 4);
-			else
-				upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / de_width, height / de_height, bpp * 2);
+			upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / de_width, height / de_height, bpp * 2);
 			break;
 
+		case 4:
+			upload_plane(pass, frame->data[3], frame->linesize[3], aTexture, width, height, bpp);
 		default:
 			upload_plane(pass, frame->data[0], frame->linesize[0], yTexture, width, height, bpp);
+			upload_plane(pass, frame->data[1], frame->linesize[1], uTexture, width / de_width, height / de_height, bpp);
+			upload_plane(pass, frame->data[2], frame->linesize[2], vTexture, width / de_width, height / de_height, bpp);
 		}
 	}
 
@@ -397,12 +416,13 @@ private:
 		SDL_BindGPUGraphicsPipeline(pass, pipeline);
 
 		// Bind textures + sampler
-		SDL_GPUTextureSamplerBinding bindings[3] = {
+		SDL_GPUTextureSamplerBinding bindings[4] = {
 			{.texture = yTexture, .sampler = sampler},
 			{.texture = uTexture, .sampler = sampler},
 			{.texture = vTexture, .sampler = sampler},
+			{.texture = aTexture, .sampler = sampler},
 		};
-		SDL_BindGPUFragmentSamplers(pass, 0, bindings, n_bindings);
+		SDL_BindGPUFragmentSamplers(pass, 0, bindings, fmt_desc->flags & AV_PIX_FMT_FLAG_PAL ? n_bindings + 1 : n_bindings);
 
 		push_uniforms(cmd, frame);
 
@@ -461,9 +481,8 @@ public:
 		return device;
 	}
 
-	bool init_pipeline(AVPixelFormat pix_fmt)
+	bool init_pipeline()
 	{
-		fmt_desc = av_pix_fmt_desc_get(pix_fmt);
 		de_width = 1 << fmt_desc->log2_chroma_w;
 		de_height = 1 << fmt_desc->log2_chroma_h;
 		n_bindings = av_pix_fmt_count_planes(pix_fmt);
@@ -479,7 +498,10 @@ public:
 				bpp++;
 			switch (fmt_desc->nb_components) {
 				case 1:
-					frag = GRAY_FRAG;
+					if (fmt_desc->flags & AV_PIX_FMT_FLAG_PAL)
+						frag = PAL8_FRAG;
+					else
+						frag = GRAY_FRAG;
 					break;
 				case 2:
 					frag = YA_FRAG;
@@ -490,17 +512,21 @@ public:
 					else
 						frag = YUYV_FRAG;
 			}
-		} else if (fmt_desc->flags & AV_PIX_FMT_FLAG_PAL) {
-			bpp = fmt_desc->comp[0].depth / 8;
-			frag = PAL8_FRAG;
 		} else {
 			bpp = (fmt_desc->comp[0].depth + 7) / 8;
-			if (n_bindings == 2) {
+			switch (n_bindings) {
+			case 2:
 				frag = NV12_FRAG;
-			} else if (bpp > 1)
-				frag = YUV_10_FRAG;
-			else 
-				frag = YUV_FRAG;
+				break;
+			case 4:
+				frag = YUVA_FRAG;
+				break;
+			default:
+				if (bpp > 1)
+					frag = YUV_10_FRAG;
+				else 
+					frag = YUV_FRAG;
+			}
 		}
 
 		SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
@@ -532,7 +558,7 @@ public:
 			.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
 			.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
 		};
-		if (pix_fmt == AV_PIX_FMT_PAL8) {
+		if (fmt_desc->flags & AV_PIX_FMT_FLAG_PAL) {
 			samp_info.min_filter = SDL_GPU_FILTER_NEAREST;
 			samp_info.mag_filter = SDL_GPU_FILTER_NEAREST;
 		}

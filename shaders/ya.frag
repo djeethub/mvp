@@ -42,5 +42,5 @@ void main() {
         r_rg = texture(u_tex_y, v_uv).rg;
     }
 
-    o_color = vec4(r_rg.r, r_rg.r, r_rg.r, r_rg.g);
+    o_color = vec4(vec3(r_rg.r) * r_rg.g, 1.0);
 }

@@ -40,6 +40,7 @@ set(SHADER_SOURCES
     shaders/bitmap.frag
     shaders/yuyv.frag
     shaders/ya.frag
+    shaders/yuva.frag
 )
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
