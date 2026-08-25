@@ -662,24 +662,6 @@ public:
         gpu.render(app_sub);
     }
 
-    static std::string shell_quote(const std::string &value)
-    {
-        std::string escaped = "'";
-        for (char c : value)
-        {
-            if (c == '\'')
-            {
-                escaped += "'\\''";
-            }
-            else
-            {
-                escaped += c;
-            }
-        }
-        escaped += "'";
-        return escaped;
-    }
-
     bool open_file_location()
     {
         check_dir_future();

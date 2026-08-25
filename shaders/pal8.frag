@@ -15,7 +15,6 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 o_color;
 
 void main() {
-    vec4 rgba;
     // Calculate how many source texels fit inside ONE screen pixel
     vec2 duv_dx = dFdx(v_uv);
     vec2 duv_dy = dFdy(v_uv);
@@ -26,7 +25,7 @@ void main() {
         // Expand kernel radius based on downscaling factor to aggregate all pixels
         vec2 radius = max(texelsPerPixel * 0.5, vec2(1.0));
         float totalWeight = 0.0;
-        rgba = vec4(0.0);
+        vec4 rgba = vec4(0.0);
         // Sample across the footprint covering this destination pixel
         for (float y = -radius.y; y <= radius.y; y += 1.0) {
             for (float x = -radius.x; x <= radius.x; x += 1.0) {

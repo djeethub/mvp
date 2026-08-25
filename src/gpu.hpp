@@ -352,7 +352,7 @@ private:
 
 				case AV_PIX_FMT_RGB24:
 					setup_sws_context(pix_fmt, AV_PIX_FMT_RGBA);
-				default:	// AV_PIX_FMT_RGBA
+				default:
 					yTexture = create_plane_texture(width / de_width, height, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
 				}
 			}
@@ -533,15 +533,24 @@ public:
 		SDL_GPUShader *vs = load_shader(VERT);
 		SDL_GPUShader *fs = load_shader(frag);
 
-		SDL_GPUColorTargetDescription color_target = {
-			.format = SDL_GetGPUSwapchainTextureFormat(device, window)
+		SDL_GPUColorTargetDescription color_desc = {
+			.format = SDL_GetGPUSwapchainTextureFormat(device, window),
+			.blend_state = {
+                .src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+                .dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ZERO,
+                .color_blend_op = SDL_GPU_BLENDOP_ADD,
+                .src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE,
+                .dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO,
+                .alpha_blend_op = SDL_GPU_BLENDOP_ADD,
+                .enable_blend = (fmt_desc->flags & AV_PIX_FMT_FLAG_ALPHA) != 0,
+            }
 		};
 		SDL_GPUGraphicsPipelineCreateInfo pipe_info = {
 			.vertex_shader = vs,
 			.fragment_shader = fs,
 			.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP,
 			.target_info = {
-				.color_target_descriptions = &color_target,
+				.color_target_descriptions = &color_desc,
 				.num_color_targets = 1,
 			},
 		};

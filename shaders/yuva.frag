@@ -47,6 +47,6 @@ void main() {
         yuva = vec4(texture(u_tex_y, v_uv).r, texture(u_tex_u, v_uv).r, texture(u_tex_v, v_uv).r, texture(u_tex_a, v_uv).r);
     }
 
-    vec3 rgb = to_rgb(yuva.rgb, uf.color_range, uf.colorspace) * yuva.a;
-    o_color = vec4(rgb, 1.0);
+    vec3 rgb = to_rgb(yuva.rgb, uf.color_range, uf.colorspace);
+    o_color = vec4(rgb, yuva.a);
 }
