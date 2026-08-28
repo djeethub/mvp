@@ -1,1 +1,1 @@
-# Mini Video Player
+# Mini Media Player

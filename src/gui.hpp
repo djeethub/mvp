@@ -209,7 +209,7 @@ class AppGui {
                         ImGuiWindowFlags_NoNav |
                         ImGuiWindowFlags_NoMove);
             auto duration = state->video.get_duration();
-            if (ImGui::IsWindowHovered() && duration > 0.05) {
+            if (state->media_mode == Sound || (ImGui::IsWindowHovered() && duration > 0.05)) {
                 auto play_time = state->get_play_time();
                 float v = play_time / duration;
                 ImGui::SetNextItemWidth(-1.0f);

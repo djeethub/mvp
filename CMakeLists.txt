@@ -80,25 +80,6 @@ endforeach()
 
 add_custom_target(CompileShaders DEPENDS ${SPIRV_HEADER_FILES})
 
-# FetchContent
-include(FetchContent)
-
-FetchContent_Declare(
-  readerwriterqueue
-  GIT_REPOSITORY    https://github.com/cameron314/readerwriterqueue
-  GIT_TAG           master
-)
-FetchContent_MakeAvailable(readerwriterqueue)
-FetchContent_GetProperties(readerwriterqueue SOURCE_DIR readerwriterqueue_dir)
-
-FetchContent_Declare(
-  concurrentqueue
-  GIT_REPOSITORY    https://github.com/cameron314/concurrentqueue
-  GIT_TAG           master
-)
-FetchContent_MakeAvailable(concurrentqueue)
-FetchContent_GetProperties(concurrentqueue SOURCE_DIR concurrentqueue_dir)
-
 # Configure includes for the 'my_imgui' target safely
 target_include_directories(my_imgui PUBLIC 
     ${IMGUI_DIR}
@@ -117,8 +98,8 @@ target_include_directories(main PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends
     ${CMAKE_CURRENT_BINARY_DIR}/shaders
-    ${readerwriterqueue_dir}
-    ${concurrentqueue_dir}
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/readerwriterqueue
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/concurrentqueue
 )
 
 target_link_libraries(main PRIVATE

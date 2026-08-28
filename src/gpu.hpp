@@ -328,7 +328,7 @@ private:
 		destroy_textures();
 		pix_fmt = static_cast<AVPixelFormat>(frame->format);
 		fmt_desc = av_pix_fmt_desc_get(pix_fmt);
-		SDL_Log("out_pix_fmt: %s\n", av_get_pix_fmt_name(pix_fmt));
+//		SDL_Log("out_pix_fmt: %s\n", av_get_pix_fmt_name(pix_fmt));
 		init_pipeline();
 		width = frame->width;
 		height = frame->height;
@@ -433,6 +433,7 @@ public:
     float video_scale = 1.0;
     float video_pan_x = 0.0;
     float video_pan_y = 0.0;
+	auto get_pix_fmt() { return pix_fmt; }
 
 	~AppGpu()
 	{

@@ -38,7 +38,10 @@ static SDL_HitTestResult SDLCALL WindowHitTest(SDL_Window *win, const SDL_Point 
 AppGui gui;
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[]) {
-    if (argc < 2 || !argv[1]) return SDL_APP_FAILURE;
+    if (argc < 2 || !argv[1]) {
+        SDL_Log("Usage: %s <media_file>", argv[0]);
+        return SDL_APP_FAILURE;
+    }
 
     if (!SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO)) {
         SDL_Log("Failed to initialize SDL Audio: %s", SDL_GetError());
@@ -69,12 +72,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             if (!ImGui::GetIO().WantCaptureMouse) {
                 if (event->wheel.y < 0) {
                     if (state->media_mode == Image)
-                        if (state->open_next_file(true)) {
+                        if (state->open_next_file(Next)) {
                             gui.show_noti(state->get_file_name());
                         }
                 } else if (event->wheel.y > 0) {
                     if (state->media_mode == Image)
-                        if (state->open_next_file(false)) {
+                        if (state->open_next_file(Prev)) {
                             gui.show_noti(state->get_file_name());
                         }
                 }
@@ -92,12 +95,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             switch (event->key.key) {
                 case SDLK_ESCAPE: return SDL_APP_SUCCESS;
                 case SDLK_RETURN:
-                    if (state->open_next_file(true)) {
+                    if (state->open_next_file(Next)) {
                         gui.show_noti(state->get_file_name());
                     }
                     break;
                 case SDLK_BACKSPACE:
-                    if (state->open_next_file(false)) {
+                    if (state->open_next_file(Prev)) {
                         gui.show_noti(state->get_file_name());                        
                     }
                     break;
@@ -180,16 +183,49 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                     break;
 
                 case SDLK_SPACE:
-                    state->pause();
-                    gui.show_noti(state->video.is_paused ? "Paused" : "Resumed");
+                    if (state->media_mode == Image) {
+                        if (state->open_next_file(Next)) {
+                            gui.show_noti(state->get_file_name());
+                        }
+                    } else {
+                        state->pause();
+                        gui.show_noti(state->video.is_paused ? "Paused" : "Resumed");
+                    }
+                    break;
+
+                case SDLK_HOME:
+                    if (state->media_mode == Image) {
+                        state->open_next_file(First);
+                    } else {
+                        state->seek(state->video.get_start_time());
+                    }
+                    break;
+
+                case SDLK_END:
+                    if (state->media_mode == Image)
+                        state->open_next_file(Last);
                     break;
 
                 case SDLK_T:
                     gui.show_noti(state->get_file_name());
                     break;
 
-                case SDLK_HOME:
-                    state->seek(state->video.get_start_time());
+                case SDLK_V: {
+                    auto video_ctx = state->video.get_video_ctx();
+                    if (video_ctx) {
+                        auto video_desc = std::format("Video: {} -> {} -> {}", av_get_pix_fmt_name(video_ctx->pix_fmt), video_ctx->codec->name, av_get_pix_fmt_name(state->gpu.get_pix_fmt()));
+                        gui.show_noti(video_desc);
+                    }
+                }
+                    break;
+
+                case SDLK_A: {
+                    auto audio_ctx = state->video.get_audio_ctx();
+                    if (audio_ctx) {
+                        auto audio_desc = std::format("Audio: {} {} {}", av_get_sample_fmt_name(audio_ctx->sample_fmt), audio_ctx->ch_layout.nb_channels, audio_ctx->sample_rate);
+                        gui.show_noti(audio_desc);
+                    }
+                }
                     break;
 
                 case SDLK_F9:

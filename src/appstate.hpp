@@ -23,7 +23,15 @@ namespace fs = std::filesystem;
 enum MediaMode {
     None = 0,
     Video,
-    Image
+    Image,
+    Sound
+};
+
+enum NavMode {
+    First,
+    Next,
+    Prev,
+    Last
 };
 
 struct DirData {
@@ -37,6 +45,7 @@ private:
     SDL_AudioStream *audio_stream = nullptr;
     static inline const std::unordered_set<std::string> video_exts = { ".mp4", ".mkv", ".mov", ".flv", ".wmv", ".webm", ".avi" };
     static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".jfif" };
+    static inline const std::unordered_set<std::string> sound_exts = { ".mp3", ".flac", ".ape", ".opus" };
     std::future<DirData *> dir_future;
     double seek_time;
     AVSubtitleType sub_type;
@@ -64,7 +73,7 @@ public:
 
     bool init() {
         Uint32 window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIDDEN;
-        window = SDL_CreateWindow("mvp", 800, 600, window_flags);
+        window = SDL_CreateWindow("mm", 640, 320, window_flags);
         if (!window) { return false; }
 
         return gpu.init(window);
@@ -80,6 +89,8 @@ public:
                     return Video;
                 if (image_exts.contains(ext))
                     return Image;
+                if (sound_exts.contains(ext))
+                    return Sound;
                 break;
 
             case Video:
@@ -88,6 +99,10 @@ public:
 
             case Image:
                 if (image_exts.contains(ext))
+                    return Image;
+
+            case Sound:
+                if (sound_exts.contains(ext))
                     return Image;
         }
         return None;
@@ -200,19 +215,34 @@ public:
         }
     }
 
-    bool open_next_file(bool next) {
+    bool open_next_file(NavMode mode) {
         check_dir_future();
 
-        if (next) {
-            if (current_index < image_files.size() - 1) {
-                current_index++;
-            } else
-                return false;
-        } else {
-            if (current_index > 0) {
-                current_index--;
-            } else
-                return false;
+        switch (mode) {
+            case Next:
+                if (current_index < image_files.size() - 1) {
+                    current_index++;
+                } else
+                    return false;
+                break;
+            case Prev:
+                if (current_index > 0) {
+                    current_index--;
+                } else
+                    return false;
+                break;
+            case First:
+                if (current_index != 0) {
+                    current_index = 0;
+                } else
+                    return false;
+                break;
+            case Last:
+                if (current_index < image_files.size() - 1) {
+                    current_index = image_files.size() - 1;
+                } else
+                    return false;
+                break;
         }
 
         return open_video((fs::path(parent_dir) / image_files[current_index]).string());
@@ -231,7 +261,7 @@ public:
                 if (video.open_audio_decoder()) {
     //                video.setup_swr_context();
                     auto audio_ctx = video.get_audio_ctx();
-                    SDL_Log("in_sample_fmt: %s\n", av_get_sample_fmt_name(audio_ctx->sample_fmt));
+//                    SDL_Log("in_sample_fmt: %s\n", av_get_sample_fmt_name(audio_ctx->sample_fmt));
 
                     SDL_AudioFormat sdl_fmt = SDL_AUDIO_UNKNOWN;
                     switch (audio_ctx->sample_fmt) {
@@ -272,7 +302,7 @@ public:
 
             if (video.find_video_stream()) {
                 if (video.open_video_decoder()) {
-                    SDL_Log("in_pix_fmt: %s\n", av_get_pix_fmt_name(video.get_video_ctx()->pix_fmt));
+//                    SDL_Log("in_pix_fmt: %s\n", av_get_pix_fmt_name(video.get_video_ctx()->pix_fmt));
                 }
             }
 
