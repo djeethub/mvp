@@ -555,9 +555,11 @@ public:
     }
 
     void set_skip(AVDiscard frame, AVDiscard loop_filter, AVDiscard idct) {
-        video_codec_ctx->skip_frame = frame;
-        video_codec_ctx->skip_loop_filter = loop_filter;
-        video_codec_ctx->skip_idct = idct;
+        if (video_codec_ctx) {
+            video_codec_ctx->skip_frame = frame;
+            video_codec_ctx->skip_loop_filter = loop_filter;
+            video_codec_ctx->skip_idct = idct;
+        }
     }
 
     int read_next_frame(double play_time, bool preload = false) {
