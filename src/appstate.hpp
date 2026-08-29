@@ -45,12 +45,11 @@ private:
     SDL_AudioStream *audio_stream = nullptr;
     static inline const std::unordered_set<std::string> video_exts = { ".mp4", ".mkv", ".mov", ".flv", ".wmv", ".webm", ".avi" };
     static inline const std::unordered_set<std::string> image_exts = { ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".jfif" };
-    static inline const std::unordered_set<std::string> sound_exts = { ".mp3", ".flac", ".ape", ".opus" };
+    static inline const std::unordered_set<std::string> sound_exts = { ".mp3", ".flac", ".opus", ".wav", ".ogg", ".ape", ".tta", ".mpa", ".wma", ".aac" };
     std::future<DirData *> dir_future;
     double seek_time;
     AVSubtitleType sub_type;
     SDL_AudioSpec audio_spec;
-    bool is_loopable;
 
 public:
     std::vector<std::string> image_files;
@@ -73,7 +72,7 @@ public:
 
     bool init() {
         Uint32 window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIDDEN;
-        window = SDL_CreateWindow("mm", 640, 320, window_flags);
+        window = SDL_CreateWindow("mm", 480, 240, window_flags);
         if (!window) { return false; }
 
         return gpu.init(window);
@@ -133,7 +132,6 @@ public:
             audio_stream = nullptr;
         }
         clear_frame_buffers();
-        is_loopable = false;
         sub_type = SUBTITLE_NONE;
     }
 
@@ -295,7 +293,6 @@ public:
                     } else {
                         if (!video.is_paused)
                             SDL_ResumeAudioStreamDevice(audio_stream);
-                        is_loopable = true;
                     }
                 }
             }
@@ -314,7 +311,7 @@ public:
             chapter_list = video.read_chapters();
 
             resize_window();
-            SDL_SetWindowTitle(window, file_path.c_str());
+//            SDL_SetWindowTitle(window, file_path.c_str());
             
             seek_time = video.get_start_time();
             video.seek_time = seek_time;
@@ -432,9 +429,9 @@ public:
         AVFrame *frame;
         while (video.audio_frame_queue.try_dequeue(frame))
         {
-            auto frame_time = frame->pts * video.get_audio_time_base();
             if (is_seeking) {
                 is_seeking = false;
+                auto frame_time = frame->pts * video.get_audio_time_base();
                 set_play_time(frame_time);
             }
             if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frame->format))) {
@@ -467,17 +464,8 @@ public:
                 frame_to_display = frame;
                 video.video_frame_queue.pop();
             } else {
-                is_loopable = true;
                 break;
             }
-        }
-        if (!frame && video.is_eof.load(std::memory_order_acquire)) {
-            if (is_loopable) {
-                if (seek(video.get_start_time())) {
-                    return nullptr;
-                }
-            }
-            set_video_play(false);
         }
         return frame_to_display;
     }
@@ -686,7 +674,14 @@ public:
             auto video_frame = check_video_frame(play_time);
             if (video_frame) {
                 gpu.set_frame(video_frame, play_time, app_sub);
-            }    
+            } else {
+                auto duration = video.get_duration();
+                if (duration <= play_time) {
+                    if (duration > 0.5 && is_loop && seek(video.get_start_time())) {
+                    } else
+                        set_video_play(false);
+                }
+            }
         }
 
         gpu.render(app_sub);

@@ -306,7 +306,7 @@ public:
         ass_set_fonts(ass_renderer, nullptr, "Sans", 1, nullptr, 0);
         ass_set_storage_size(ass_renderer, width, height);
         ass_set_frame_size(ass_renderer, wnd_w, wnd_h); // Match your window canvas size
-        ass_set_hinting(ass_renderer, ASS_HINTING_NATIVE);
+//        ass_set_hinting(ass_renderer, ASS_HINTING_NATIVE);
 
         // 2. Create an EMPTY, blank track that you will feed packets manually
         ass_track = ass_new_track(ass_library);

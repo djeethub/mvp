@@ -222,7 +222,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                 case SDLK_A: {
                     auto audio_ctx = state->video.get_audio_ctx();
                     if (audio_ctx) {
-                        auto audio_desc = std::format("Audio: {} {} {}", av_get_sample_fmt_name(audio_ctx->sample_fmt), audio_ctx->ch_layout.nb_channels, audio_ctx->sample_rate);
+                        auto audio_desc = std::format("Audio: {} {} {} -> {}", av_get_sample_fmt_name(audio_ctx->sample_fmt), audio_ctx->ch_layout.nb_channels, audio_ctx->sample_rate, audio_ctx->codec->name);
                         gui.show_noti(audio_desc);
                     }
                 }

@@ -176,7 +176,7 @@ public:
     auto get_audio_ctx() const { return audio_codec_ctx; }
     auto get_format_ctx() const { return format_ctx; }
     auto is_audio() const { return audio_codec_ctx != nullptr; }
-    auto is_video() const { return video_codec_ctx != nullptr; }
+    auto is_video() const { return video_available; }
 
     moodycamel::ReaderWriterQueue<AVFrame *> audio_frame_queue;
     moodycamel::ReaderWriterQueue<AVFrame *> video_frame_queue;
@@ -188,7 +188,7 @@ public:
     bool is_seeking = false;
     double seek_time;
     std::atomic<double> shared_tick;
-    std::atomic<bool> is_eof;
+    bool video_available;
 
     bool open(const std::string &filename)
     {
@@ -205,11 +205,10 @@ public:
             close();
             return false;
         }
-        start_time = format_ctx->start_time == AV_NOPTS_VALUE ? 0.0 : static_cast<double>(format_ctx->start_time) * AV_TIME_BASE;
+        start_time = 0;//format_ctx->start_time == AV_NOPTS_VALUE ? 0.0 : static_cast<double>(format_ctx->start_time) * AV_TIME_BASE;
         duration = static_cast<double>(format_ctx->duration) / AV_TIME_BASE;
         if (!packet) packet = av_packet_alloc();
         if (!frame) frame = frame_pool.alloc();
-        is_eof.store(false, std::memory_order_release);
         last_audio_time = start_time;
         last_video_time = start_time;
         return true;
@@ -367,6 +366,7 @@ public:
         avcodec_open2(video_codec_ctx, codec, nullptr);
         video_time_base = av_q2d(format_ctx->streams[video_stream_index]->time_base);
 //        printf("av format: %i -> %i\n", video_codec_ctx->pix_fmt, finalPixelFormat);
+        video_available = true;
         return true;
     }
 
@@ -442,6 +442,7 @@ public:
         subtitle_list.clear();
         audio_list.clear();
         is_seeking = false;
+        video_available = false;
     }
 
     void get_video_dimensions(int& width, int& height) const {
@@ -468,7 +469,6 @@ public:
                 avcodec_flush_buffers(video_codec_ctx);
             if (subtitle_codec_ctx)
                 avcodec_flush_buffers(subtitle_codec_ctx);
-            is_eof.store(false, std::memory_order_release);
         }
         return seek_result;
     }
@@ -569,21 +569,19 @@ public:
         while ((is_video() && last_video_time < target_play_time) || (is_audio() && last_audio_time < target_play_time)) {
             read_result = av_read_frame(format_ctx, packet);
 
-            if (packet->stream_index == audio_stream_index)
+            if (packet->stream_index == audio_stream_index && packet->pts != AV_NOPTS_VALUE)
             {
                 last_audio_time = packet->pts * get_audio_time_base();
                 if (last_audio_time >= play_time && avcodec_send_packet(audio_codec_ctx, packet) >= 0)
                 {
                     while (avcodec_receive_frame(audio_codec_ctx, frame) >= 0)
                     {
-                        if (frame->pts != AV_NOPTS_VALUE) {
-                            if (is_seeking) {
-                                set_seeking(false);
-                            }
-                            auto new_frame = frame_alloc();
-                            av_frame_move_ref(new_frame, frame);
-                            audio_frame_queue.enqueue(new_frame);
+                        if (is_seeking) {
+                            set_seeking(false);
                         }
+                        auto new_frame = frame_alloc();
+                        av_frame_move_ref(new_frame, frame);
+                        audio_frame_queue.enqueue(new_frame);
                         av_frame_unref(frame);
                     }
                 }
@@ -594,23 +592,25 @@ public:
                 {
                     while (avcodec_receive_frame(video_codec_ctx, frame) >= 0)
                     {
-                        if (frame->pts != AV_NOPTS_VALUE) {
+                        if (frame->pts == AV_NOPTS_VALUE) {
+                            frame->pts = 0;
+                            video_available = false;
+                        } else
                             last_video_time = frame->pts * get_video_time_base();
-                            if (last_video_time >= play_time) {
-                                if (is_seeking) {
-                                    set_seeking(false);
-                                }
-                                auto new_frame = frame_alloc();
-                                if (frame->hw_frames_ctx) {
-                                    auto err = av_hwframe_transfer_data(new_frame, frame, 0);
-                                    if (err != 0) SDL_Log("av_hwframe_transfer_data failed: %s\n", av_err2string(err));
-                                    av_frame_copy_props(new_frame, frame);
-                                }
-                                else {
-                                    av_frame_move_ref(new_frame, frame);
-                                }
-                                video_frame_queue.enqueue(new_frame);
+                        if (last_video_time >= play_time) {
+                            if (is_seeking) {
+                                set_seeking(false);
                             }
+                            auto new_frame = frame_alloc();
+                            if (frame->hw_frames_ctx) {
+                                auto err = av_hwframe_transfer_data(new_frame, frame, 0);
+                                if (err != 0) SDL_Log("av_hwframe_transfer_data failed: %s\n", av_err2string(err));
+                                av_frame_copy_props(new_frame, frame);
+                            }
+                            else {
+                                av_frame_move_ref(new_frame, frame);
+                            }
+                            video_frame_queue.enqueue(new_frame);
                         }
                         av_frame_unref(frame);
                     }
@@ -637,7 +637,6 @@ public:
             if (!preload && last_video_time > play_time)
                 break;
             if (read_result < 0) {
-                is_eof.store(true, std::memory_order_release);
                 break;
             }
         }
@@ -649,7 +648,7 @@ public:
         if (is_paused && !is_seeking)
             return LARGE_INTERVAL;
         auto tick = get_ticks();
-        double play_time = is_seeking ? seek_time : (tick - shared_tick.load(std::memory_order_acquire));
+        double play_time = is_seeking ? seek_time : (tick - shared_tick.load(std::memory_order_relaxed));
         auto rlt = read_next_frame(play_time, true);
 //            SDL_Log("%i %i\n", audio_frame_queue.size_approx(), video_frame_queue.size_approx());
         if (rlt < 0) {
@@ -695,7 +694,7 @@ public:
     }
 
     double get_play_time() const {
-        return is_seeking ? seek_time : (get_ticks() - shared_tick.load(std::memory_order_acquire));
+        return is_seeking ? seek_time : (get_ticks() - shared_tick.load(std::memory_order_relaxed));
     }
 
 private:
