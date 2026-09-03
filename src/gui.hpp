@@ -139,11 +139,11 @@ class AppGui {
             return m > 0 ? std::format("{}:{:02}", m, n % 60) : std::to_string(n);
         }
 
-        std::string lang_string(const std::string& title, const std::string& lang) {
-            if (lang.empty()) {
-                return title;
+        static std::string label(const ff::AudioData& data) {
+            if (data.lang.empty()) {
+                return std::format("{}##{}", data.title, data.idx);
             } else
-                return std::format("{} ({})", title, lang);
+                return std::format("{} ({})##{}", data.title, data.lang, data.idx);
         }
 
         SDL_AppResult draw()
@@ -259,7 +259,7 @@ class AppGui {
                     ImGui::Separator();
                     auto tracks = state->video.get_audio_tracks();
                     for (const auto& data : tracks) {
-                        if (ImGui::MenuItem(lang_string(data.title, data.lang).c_str(), nullptr, data.idx == idx, true))
+                        if (ImGui::MenuItem(label(data).c_str(), nullptr, data.idx == idx, true))
                         {
                             state->select_audio(data.idx);
                         }
@@ -276,7 +276,7 @@ class AppGui {
                     ImGui::Separator();
                     auto tracks = state->video.get_subtitle_tracks();
                     for (const auto& data : tracks) {
-                        if (ImGui::MenuItem(lang_string(data.title, data.lang).c_str(), nullptr, data.idx == idx, true))
+                        if (ImGui::MenuItem(label(data).c_str(), nullptr, data.idx == idx, true))
                         {
                             state->select_subtitle(data.idx);
                         }

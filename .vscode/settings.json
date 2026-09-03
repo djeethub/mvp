@@ -2,6 +2,6 @@
     "cmake.debugConfig": {
         "args": [""] 
     },
-    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/${hostSystemName}-${presetName}/compile_commands.json",
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
     "files.eol": "\n"
 }

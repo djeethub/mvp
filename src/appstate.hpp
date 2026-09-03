@@ -558,11 +558,11 @@ public:
 
     void set_play_time(double play_time)
     {
-        video.shared_tick.store(get_ticks() - play_time, std::memory_order_release);
+        video.shared_tick.store(get_ticks() - play_time, std::memory_order_relaxed);
     }
 
     double get_play_time() const {
-        return (is_seeking || video.is_paused) ? seek_time : (get_ticks() - video.shared_tick.load(std::memory_order_relaxed));
+        return video.is_paused ? seek_time : (get_ticks() - video.shared_tick.load(std::memory_order_relaxed));
     }
 
     void resize_window(float window_scale = 1.0) {
@@ -674,10 +674,10 @@ public:
             auto video_frame = check_video_frame(play_time);
             if (video_frame) {
                 gpu.set_frame(video_frame, play_time, app_sub);
-            } else {
+            } else if (video.is_eof.load(std::memory_order_relaxed)) {
                 auto duration = video.get_duration();
                 if (duration <= play_time) {
-                    if (duration > 0.5 && is_loop && seek(video.get_start_time())) {
+                    if (is_loop && duration > 0.5 && seek(video.get_start_time())) {
                     } else
                         set_video_play(false);
                 }

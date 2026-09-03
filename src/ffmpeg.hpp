@@ -167,8 +167,8 @@ public:
     auto get_video_time_base() const { return video_time_base; }
     auto get_audio_time_base() const { return audio_time_base; }
     auto get_subtitle_time_base() const { return subtitle_time_base; }
-    auto get_subtitle_tracks() const { return subtitle_list; }
-    auto get_audio_tracks() const { return audio_list; }
+    const auto& get_subtitle_tracks() const { return subtitle_list; }
+    const auto& get_audio_tracks() const { return audio_list; }
     auto get_subtitle_index() const { return subtitle_stream_idx; }
     auto get_audio_index() const { return audio_stream_index; }
     auto get_subtitle_ctx() const { return subtitle_codec_ctx; }
@@ -188,6 +188,7 @@ public:
     bool is_seeking = false;
     double seek_time;
     std::atomic<double> shared_tick;
+    std::atomic<bool> is_eof;
     bool video_available;
 
     bool open(const std::string &filename)
@@ -205,8 +206,8 @@ public:
             close();
             return false;
         }
-        start_time = 0;//format_ctx->start_time == AV_NOPTS_VALUE ? 0.0 : static_cast<double>(format_ctx->start_time) * AV_TIME_BASE;
-        duration = static_cast<double>(format_ctx->duration) / AV_TIME_BASE;
+        start_time = format_ctx->start_time == AV_NOPTS_VALUE ? 0.0 : static_cast<double>(format_ctx->start_time) * AV_TIME_BASE;
+        duration = format_ctx->duration == AV_NOPTS_VALUE ? LARGE_INTERVAL : static_cast<double>(format_ctx->duration) / AV_TIME_BASE;
         if (!packet) packet = av_packet_alloc();
         if (!frame) frame = frame_pool.alloc();
         last_audio_time = start_time;
@@ -338,15 +339,8 @@ public:
         return true;
     }
 
-    bool open_video_decoder(bool hwdec = true)
-    {
-        AVCodecParameters *codec_params = format_ctx->streams[video_stream_index]->codecpar;
-        const AVCodec *codec = avcodec_find_decoder(codec_params->codec_id);
+    bool open_video_decoder(const AVCodecParameters *codec_params, const AVCodec *codec, bool hwdec) {
         video_codec_ctx = avcodec_alloc_context3(codec);
-        switch (codec_params->format) {
-            case AV_PIX_FMT_GRAY8:
-                hwdec = false;
-        }
         if (hwdec) {
 #ifdef __linux__
             AVBufferRef *hw_device_ctx = nullptr;
@@ -363,11 +357,35 @@ public:
         video_codec_ctx->thread_count = 0;
         video_codec_ctx->thread_type = FF_THREAD_FRAME; // Or FF_THREAD_SLICE
         avcodec_parameters_to_context(video_codec_ctx, codec_params);
-        avcodec_open2(video_codec_ctx, codec, nullptr);
+        auto err = avcodec_open2(video_codec_ctx, codec, nullptr);
+        if (err) {
+            av_err_log("avcodec_open2", err);
+            avcodec_free_context(&video_codec_ctx);
+            return false;
+        }
         video_time_base = av_q2d(format_ctx->streams[video_stream_index]->time_base);
-//        printf("av format: %i -> %i\n", video_codec_ctx->pix_fmt, finalPixelFormat);
         video_available = true;
         return true;
+    }
+
+    bool open_video_decoder(bool hwdec = true)
+    {
+        AVCodecParameters *codec_params = format_ctx->streams[video_stream_index]->codecpar;
+        const AVCodec *codec = nullptr;
+
+        if (codec_params->codec_id == AV_CODEC_ID_AV1 && hwdec) {
+            codec = avcodec_find_decoder_by_name("av1");
+            if (codec && open_video_decoder(codec_params, codec, true))
+                return true;
+            hwdec = false;
+        } else {
+            switch (codec_params->format) {
+                case AV_PIX_FMT_GRAY8:
+                    hwdec = false;
+            }
+        }
+        codec = avcodec_find_decoder(codec_params->codec_id);
+        return open_video_decoder(codec_params, codec, hwdec);
     }
 
     bool open_subtitle_decoder() {
@@ -443,6 +461,7 @@ public:
         audio_list.clear();
         is_seeking = false;
         video_available = false;
+        is_eof.store(false, std::memory_order_relaxed);
     }
 
     void get_video_dimensions(int& width, int& height) const {
@@ -460,7 +479,7 @@ public:
         int seek_result = avformat_seek_file(
                 format_ctx,
                 -1,
-                INT64_MIN, ts, ts,
+                INT64_MIN, ts, INT64_MAX,
                 AVSEEK_FLAG_BACKWARD);
         if (seek_result >= 0) {
             if (audio_codec_ctx)
@@ -469,6 +488,7 @@ public:
                 avcodec_flush_buffers(video_codec_ctx);
             if (subtitle_codec_ctx)
                 avcodec_flush_buffers(subtitle_codec_ctx);
+            is_eof.store(false, std::memory_order_relaxed);
         }
         return seek_result;
     }
@@ -530,11 +550,11 @@ public:
         return chapter_list;
     }
 
-    static std::string av_err2string(int errnum) {
+    void av_err_log(const char *func, int err) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(errnum, errbuf, sizeof(errbuf));
-        return std::string(errbuf);
-    }    
+        if (av_strerror(err, errbuf, sizeof(errbuf)) == 0)
+            SDL_Log("%s failed: %s\n", func, errbuf);
+    }
 
     void select_subtitle(int idx) {
         if (subtitle_stream_idx != idx) {
@@ -604,7 +624,7 @@ public:
                             auto new_frame = frame_alloc();
                             if (frame->hw_frames_ctx) {
                                 auto err = av_hwframe_transfer_data(new_frame, frame, 0);
-                                if (err != 0) SDL_Log("av_hwframe_transfer_data failed: %s\n", av_err2string(err));
+                                if (err) av_err_log("av_hwframe_transfer_data", err);
                                 av_frame_copy_props(new_frame, frame);
                             }
                             else {
@@ -636,7 +656,14 @@ public:
 
             if (!preload && last_video_time > play_time)
                 break;
-            if (read_result < 0) {
+            if (read_result) {
+                if (read_result != AVERROR_EOF) {
+                    av_err_log("av_read_frame", read_result);
+                }
+                if (duration == LARGE_INTERVAL) {
+                    duration = SDL_max(last_audio_time, last_video_time);
+                }
+                is_eof.store(true, std::memory_order_relaxed);
                 break;
             }
         }

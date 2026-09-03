@@ -213,7 +213,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
                 case SDLK_V: {
                     auto video_ctx = state->video.get_video_ctx();
                     if (video_ctx) {
-                        auto video_desc = std::format("Video: {} -> {} -> {}", av_get_pix_fmt_name(video_ctx->pix_fmt), video_ctx->codec->name, av_get_pix_fmt_name(state->gpu.get_pix_fmt()));
+                        auto out_fmt = state->gpu.get_pix_fmt();
+                        auto out_desc = out_fmt != AV_PIX_FMT_NONE ? av_get_pix_fmt_name(out_fmt) : "n/a";
+                        auto video_desc = std::format("Video: {} -> {} -> {}", av_get_pix_fmt_name(video_ctx->pix_fmt), video_ctx->codec->name, out_desc);
                         gui.show_noti(video_desc);
                     }
                 }
